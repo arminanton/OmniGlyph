@@ -188,6 +188,7 @@ export function isOmniGlyphSupportedModelForScope(
   if (scope === 'passthrough') return false;
   const base = baseModelId(model).toLowerCase();
   if (scope === 'aggressive' || scope === 'smart-aggressive') {
+    if (!isModelFamilySupported(base)) return false;
     if (runtimeModelBases !== null) {
       return runtimeModelBases.some((candidate) => modelBaseMatches(base, candidate));
     }
@@ -197,7 +198,7 @@ export function isOmniGlyphSupportedModelForScope(
       const parsed = envBases.split(',').map((s: string) => s.trim()).filter(Boolean);
       return parsed.some((candidate: string) => modelBaseMatches(base, candidate));
     }
-    return isModelFamilySupported(base);
+    return true;
   }
   return isAllowedForScope(model, scope);
 }
