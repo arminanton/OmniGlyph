@@ -7,6 +7,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createWarpRuntime } from './warp/index.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -898,9 +899,42 @@ async function main(): Promise<void> {
     await runExport(argv.slice(1));
     return; // server never starts
   }
+  let warpCommand: string[] | undefined;
+  const warpRoutes: string[] = [];
+  let cliArgv = argv;
+  if (argv[0] === 'warp') {
+    const sep = argv.indexOf('--');
+    warpCommand = sep < 0 ? [] : argv.slice(sep + 1);
+    const warpArgv = argv.slice(1, sep < 0 ? argv.length : sep);
+    const rest: string[] = [];
+    for (let i = 0; i < warpArgv.length; i += 1) {
+      const a = warpArgv[i]!;
+      if (a === '--route') {
+        const spec = warpArgv[i + 1];
+        if (spec === undefined) {
+          console.error('[OmniGlyph] warp: --route needs PATTERN=TARGET');
+          process.exit(2);
+        }
+        warpRoutes.push(spec);
+        i += 1;
+        continue;
+      }
+      if (a.startsWith('--route=')) {
+        warpRoutes.push(a.slice('--route='.length));
+        continue;
+      }
+      rest.push(a);
+    }
+    cliArgv = rest;
+  }
   // No subcommands — OmniGlyph is just the proxy. Stats / sessions / cleanup
   // tools live in the dashboard (see http://127.0.0.1:${port}/).
-  const opts = parseCli(argv);
+  const opts = parseCli(cliArgv);
+
+  if (warpCommand) {
+    createWarpRuntime({ port: opts.port, routes: warpRoutes }).launch(warpCommand);
+    return;
+  }
   // A/B harness passthrough switch (see the `transform` callback below).
   const forcePassthrough = /^(1|true|yes|on)$/i.test(process.env.OMNIGLYPH_DISABLE ?? '');
   if (forcePassthrough) {
