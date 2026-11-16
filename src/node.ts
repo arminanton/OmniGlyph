@@ -1164,7 +1164,14 @@ async function main(): Promise<void> {
  *  import does not start the proxy. */
 function isDirectCliEntrypoint(): boolean {
   const script = process.argv[1];
-  return script !== undefined && import.meta.url === pathToFileURL(script).href;
+  if (!script) return false;
+  try {
+    const scriptUrl = pathToFileURL(fs.realpathSync(script)).href;
+    if (scriptUrl === import.meta.url) return true;
+  } catch {
+    // fallback if file doesn't resolve
+  }
+  return /[\\/]bin[\\/][a-zA-Z0-9_-]+(?:\.[cm]?js)?$/.test(script);
 }
 
 if (isDirectCliEntrypoint()) {
