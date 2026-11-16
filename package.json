@@ -45,6 +45,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
+    "prepare": "node scripts/build.mjs",
     "build:atlas": "tsx scripts/gen-atlas.ts",
     "dev:node": "tsx watch src/node.ts",
     "dev:worker": "wrangler dev",
