@@ -90,7 +90,20 @@ export interface HistoryCollapseOptions {
   /** Page-height ceiling in px (728 standard, 1928 high-res). `undefined`
    *  falls through to the renderer's standard default. */
   maxHeightPx: number | undefined;
+  /** Treat each closed assistant-tool/user-result pair as its own tool round.
+   *  Safe only for clients that send a parallel batch as one assistant message
+   *  (Claude Code). See {@link findClosedPrefixBoundary}. Default false. */
+  separateAdjacentToolPairs?: boolean;
+  /** Standing limit on history images emitted per request. */
+  imageBudget?: number;
+  /** Re-cut grid for page fill instead of append-only freeze when cache is dead. */
+  packFill?: boolean;
+  /** Sticky lower bound for the freeze step, in messages. */
+  minFreezeStep?: number;
 }
+
+export const ANTHROPIC_MAX_IMAGES = 100;
+export const ANTHROPIC_HISTORY_IMAGE_BUDGET = 80;
 
 export const HISTORY_DEFAULTS: HistoryCollapseOptions = {
   keepTail: 4,
@@ -104,6 +117,9 @@ export const HISTORY_DEFAULTS: HistoryCollapseOptions = {
   denseCols: DENSE_CONTENT_COLS,
   denseCharsPerImage: DENSE_CONTENT_CHARS_PER_IMAGE,
   maxHeightPx: undefined,
+  imageBudget: ANTHROPIC_HISTORY_IMAGE_BUDGET,
+  packFill: false,
+  minFreezeStep: 0,
 };
 
 /** Per-request telemetry surfaced back to TransformInfo. */
@@ -130,6 +146,10 @@ export interface HistoryCollapseInfo {
    *  breakpoint here so it survives window advances (#11). Undefined when history is
    *  too short to have a fully grid-aligned chunk before collapseLen. */
   carryOverImageOrdinal?: number;
+  /** Freeze step actually used (messages per chunk). */
+  freezeStep?: number;
+  /** True when the collapse range had to be shortened to stay inside the image budget. */
+  budgetTrimmed?: boolean;
   /** Why we didn't collapse — populated only when no collapse happened. */
   reason?:
     | 'no_history'
@@ -137,6 +157,7 @@ export interface HistoryCollapseInfo {
     | 'no_closed_prefix'
     | 'not_profitable'
     | 'render_empty'
+    | 'over_budget'
     | 'secret_kept_text';
   /** Live credentials the secret guard found across the collapsed chunk
    *  renders (see guardImagedText / OMNIGLYPH_GUARD_SECRETS). Present whenever
@@ -157,37 +178,85 @@ export interface HistoryCollapseInfo {
  * Return the last index ≤ cutoffExclusive at which all tool_use_ids are matched
  * by tool_results in [0..i]. Returns -1 if no closed boundary exists.
  * Robust to interleaved/parallel tool calls via openSet tracking.
+ *
+ * assistant-tool/user-result pairs are treated as one tool round: some Anthropic
+ * clients serialize a parallel batch that way, so the apparently-closed gap
+ * between two pairs is not a safe collapse boundary.
+ *
+ * Pass `separateAdjacentToolPairs = true` for clients known to send a parallel
+ * batch as ONE assistant message (Claude Code). Each closed pair is then a valid
+ * boundary on its own; otherwise a pure tool loop with no text-only assistant
+ * turn never closes and the history can never collapse.
  */
 export function findClosedPrefixBoundary(
   messages: Message[],
   cutoffExclusive: number,
+  separateAdjacentToolPairs = false,
 ): number {
   if (cutoffExclusive <= 0) return -1;
   const openSet = new Set<string>();
   let lastClosed = -1;
+  let inToolRound = false;
   const limit = Math.min(cutoffExclusive, messages.length);
+  // A prefix ending on an assistant tool_use message always leaves that call's
+  // tool_result live, which upstream rejects with 400. openSet alone cannot
+  // catch it when the tool_use id is not a string (it never enters openSet), so
+  // every boundary assignment goes through this guard, in both modes.
+  const closeAt = (j: number): void => {
+    const m = messages[j];
+    const opensToolUse =
+      m?.role === 'assistant' &&
+      Array.isArray(m.content) &&
+      m.content.some((blk) => !!blk && (blk as ToolUseBlock).type === 'tool_use');
+    if (!opensToolUse) lastClosed = j;
+  };
   for (let i = 0; i < limit; i++) {
     const msg = messages[i]!;
-    if (!Array.isArray(msg.content)) {
-      if (openSet.size === 0) lastClosed = i; // plain string — no tool blocks
+
+    const assistantToolUses =
+      msg.role === 'assistant' && Array.isArray(msg.content)
+        ? (msg.content.filter(
+            (blk) => !!blk && (blk as ToolUseBlock).type === 'tool_use',
+          ) as ToolUseBlock[])
+        : [];
+
+    if (inToolRound && openSet.size === 0 && assistantToolUses.length === 0) {
+      closeAt(i - 1);
+      inToolRound = false;
+    }
+
+    if (msg.role !== 'assistant' && msg.role !== 'user') {
       continue;
     }
     if (msg.role === 'assistant') {
-      for (const blk of msg.content) {
-        if (blk && (blk as ToolUseBlock).type === 'tool_use') {
-          const id = (blk as ToolUseBlock).id;
-          if (typeof id === 'string') openSet.add(id);
-        }
-      }
-    } else if (msg.role === 'user') {
-      for (const blk of msg.content) {
-        if (blk && (blk as ToolResultBlock).type === 'tool_result') {
-          const id = (blk as ToolResultBlock).tool_use_id;
-          if (typeof id === 'string') openSet.delete(id);
-        }
+      if (assistantToolUses.length > 0 && !separateAdjacentToolPairs) inToolRound = true;
+      for (const blk of assistantToolUses) {
+        const id = blk.id;
+        if (typeof id === 'string') openSet.add(id);
       }
     }
-    if (openSet.size === 0) lastClosed = i;
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      for (const blk of msg.content) {
+        if (!blk || (blk as ToolResultBlock).type !== 'tool_result') continue;
+        const id = (blk as ToolResultBlock).tool_use_id;
+        if (typeof id === 'string') openSet.delete(id);
+      }
+    }
+    if (openSet.size === 0 && !inToolRound) closeAt(i);
+  }
+
+  // The end of a closed round is safe only if the actual next message does not
+  // continue it with another serialized tool call. Looking one message past the
+  // cutoff changes no collapsed index; it merely prevents splitting the round.
+  if (inToolRound && openSet.size === 0) {
+    const next = messages[limit];
+    const nextContinuesRound =
+      next?.role === 'assistant' &&
+      Array.isArray(next.content) &&
+      next.content.some(
+        (blk) => !!blk && (blk as ToolUseBlock).type === 'tool_use',
+      );
+    if (!nextContinuesRound) closeAt(limit - 1);
   }
   return lastClosed;
 }
@@ -333,7 +402,7 @@ export function messagesToHistorySegments(
   return { text: textOut.join('\n\n'), slotText: slotOut.join('\n\n') };
 }
 
-function compactPreview(text: string): string {
+export function compactPreview(text: string): string {
   const compact = text.replace(/\s+/g, ' ').trim();
   if (compact.length <= LATEST_COLLAPSED_USER_PREVIEW_CHARS) return compact;
   return compact.slice(0, LATEST_COLLAPSED_USER_PREVIEW_CHARS).trimEnd() + '...';
@@ -348,7 +417,7 @@ const LATEST_COLLAPSED_USER_VERBATIM_CHARS = 4000;
 const VERBATIM_HEAD_CHARS = 2600;
 const VERBATIM_TAIL_CHARS = 1400;
 
-function verbatimTaskText(text: string): string {
+export function verbatimTaskText(text: string): string {
   const t = text.trim();
   if (t.length <= LATEST_COLLAPSED_USER_VERBATIM_CHARS) return t;
   const elided = t.length - VERBATIM_HEAD_CHARS - VERBATIM_TAIL_CHARS;
@@ -574,18 +643,50 @@ export async function collapseHistory(
           ),
         )
       : rawCutoff;
-  const boundary = findClosedPrefixBoundary(messages, cutoff);
+  const boundary = findClosedPrefixBoundary(messages, cutoff, o.separateAdjacentToolPairs);
   if (boundary < 0) {
     info.reason = 'no_closed_prefix';
     return { messages, info };
   }
   // Need at least minCollapsePrefix turns in [protectedPrefix..boundary] — collapsing
   // 2-3 turns is net cost (cache-amortization math doesn't work at small scale).
-  const collapseLen = boundary + 1;
+  let collapseLen = boundary + 1;
   if (collapseLen - protectedPrefix < o.minCollapsePrefix) {
     info.reason = 'prefix_too_short';
     return { messages, info };
   }
+
+  const budget = Math.max(1, o.imageBudget ?? ANTHROPIC_HISTORY_IMAGE_BUDGET);
+  const pageChars = o.denseCharsPerImage ?? DENSE_CONTENT_CHARS_PER_IMAGE;
+
+  const msgLen: number[] = [];
+  for (let i = protectedPrefix; i < collapseLen; i++) {
+    const seg = messagesToHistorySegments(messages, i + 1, i).text;
+    msgLen.push(seg.length === 0 ? 0 : seg.length + 2);
+  }
+  const sumLen = (from: number, to: number): number => {
+    let n = 0;
+    for (let i = from; i < to; i++) n += msgLen[i]!;
+    return n;
+  };
+  const perfectPages = Math.ceil(sumLen(0, msgLen.length) / pageChars);
+  if (perfectPages > budget) {
+    let acc = 0;
+    let k = 0;
+    while (k < msgLen.length && acc + msgLen[k]! <= budget * pageChars) {
+      acc += msgLen[k]!;
+      k++;
+    }
+    const trimmedLen = findClosedPrefixBoundary(messages, protectedPrefix + k, o.separateAdjacentToolPairs) + 1;
+    if (trimmedLen - protectedPrefix < o.minCollapsePrefix) {
+      info.reason = 'over_budget';
+      return { messages, info };
+    }
+    collapseLen = trimmedLen;
+    msgLen.length = collapseLen - protectedPrefix;
+    info.budgetTrimmed = true;
+  }
+
   // Exclude slab messages (protectedPrefix) from serialization.
   const text = messagesToHistoryText(messages, collapseLen, protectedPrefix);
   if (!text || text.length === 0) {
@@ -615,7 +716,28 @@ export async function collapseHistory(
   // cacheable image boundary instead of being silently flattened (count conserved,
   // never added). Each chunk is reflowed and rendered on its own, which is what
   // makes the bytes a pure function of the chunk's messages.
-  const step = o.freezeChunk > 0 ? o.freezeChunk : collapseLen - protectedPrefix;
+  const baseStep = o.freezeChunk > 0 ? o.freezeChunk : collapseLen - protectedPrefix;
+  const rangeLen = collapseLen - protectedPrefix;
+  const pagesFor = (s: number): number => {
+    let pages = 0;
+    for (let a = 0; a < rangeLen; a += s) {
+      const b = Math.min(a + s, rangeLen);
+      const chars = sumLen(a, b);
+      if (chars > 0) pages += Math.ceil(chars / pageChars);
+    }
+    return pages;
+  };
+  let markSplits = 0;
+  for (let i = protectedPrefix; i < collapseLen; i++) {
+    if (messageCacheControl(messages[i]!) !== undefined) markSplits++;
+  }
+  let step = baseStep;
+  const minFreezeStep = o.minFreezeStep ?? 0;
+  while (minFreezeStep > 0 && step < minFreezeStep && step < rangeLen) step *= 2;
+  const packedPages = Math.max(1, Math.ceil(sumLen(0, rangeLen) / pageChars));
+  const goal = Math.min(budget, o.packFill ? packedPages + 1 : Infinity);
+  while (step < rangeLen && pagesFor(step) + markSplits > goal) step *= 2;
+  info.freezeStep = step;
   const ends = new Set<number>();
   for (let e = protectedPrefix + step; e < collapseLen; e += step) ends.add(e);
   const markerByEnd = new Map<number, CacheControl>();

@@ -38,8 +38,11 @@ import { bytesToBase64 } from './png.js';
 import {
   collapseHistory,
   HISTORY_SYNTHETIC_INTRO,
+  ANTHROPIC_MAX_IMAGES,
+  ANTHROPIC_HISTORY_IMAGE_BUDGET,
   type HistoryCollapseOptions,
 } from './history.js';
+import { noteHistoryRequest, recordFreezeStep, sessionAnchorText } from './session-state.js';
 import type { GptHistoryOptions } from './openai-history.js';
 import { CACHE_CREATE_RATE, CACHE_READ_RATE } from './baseline.js';
 import { renderTextToPngsCached } from './render-cache.js';
@@ -85,6 +88,14 @@ export interface RecoverableBlock {
 }
 
 export interface TransformOptions {
+  /** Resolved model id. Its profile supplies font, columns, height, and history defaults. */
+  model?: string;
+  /** Client session discriminator. Only its hash is exposed in TransformInfo. */
+  claudeCodeSessionId?: string;
+  /** History collapse: treat each closed tool call/result pair as its own round. */
+  separateAdjacentToolPairs?: boolean;
+  /** When true, any renderer-known character loss makes the candidate ineligible. */
+  requireLosslessRender?: boolean;
   /** Master switch — false makes this a no-op pass-through. */
   compress?: boolean;
   /** Move tool descriptions into the same image (and stub the originals). */
@@ -192,6 +203,10 @@ const DEFAULTS: Required<TransformOptions> = {
   collapseHistory: true,
   gptHistory: {},
   anthropicHistory: {},
+  model: '',
+  claudeCodeSessionId: '',
+  separateAdjacentToolPairs: false,
+  requireLosslessRender: false,
 };
 
 /**
@@ -565,6 +580,10 @@ export interface TransformInfo {
   compressedChars: number;
   imageCount: number;
   imageBytes: number;
+  /** Client-provided images present on the input before transform. */
+  nativeImages?: number;
+  pinChars?: number;
+  nativeInjectedTokens?: number;
   /** Σ width×height across all rendered images. Pairs with upstream token count for
    *  empirical px/token regression: `tokens ≈ α·outgoingTextChars + β·imagePixels`. */
   imagePixels?: number;
@@ -627,6 +646,17 @@ export interface TransformInfo {
   claudeMdSha8?: string;
   /** sha8 of first user message text (first 4 KiB). Rough thread/session id. */
   firstUserSha8?: string;
+  /** Session-state key; includes a validated client session id when available. */
+  sessionKey?: string;
+  sessionKeySource?: 'client' | 'cwd' | 'anchor';
+  /** Freeze-grid step the history collapse actually used, in messages. */
+  historyFreezeStep?: number;
+  /** The collapse re-cut the grid for page fill instead of cache freeze. */
+  historyPackFill?: boolean;
+  /** The image budget could not hold the whole closed prefix; the tail stayed live text. */
+  historyBudgetTrimmed?: boolean;
+  /** History collapse ran with separateAdjacentToolPairs. */
+  historySplitAdjacentPairs?: boolean;
   /** Raw bytes of the first rendered image. Dashboard preview only; NOT persisted to JSONL. */
   firstImagePng?: Uint8Array;
   firstImageWidth?: number;
@@ -709,6 +739,8 @@ export interface TransformInfo {
     | 'not_profitable'
     | 'too_many_images'
     | 'render_empty'
+    | 'render_lossy'
+    | 'over_budget'
     | 'collapsed'
     | 'secret_kept_text';
   /** Token count of the pre-compression body from /v1/messages/count_tokens (free).
@@ -1100,24 +1132,44 @@ export function extractClaudeMdSlab(staticText: string): string {
   return tail.slice(0, end).trim();
 }
 
-/** First user message text, capped at 4 KiB (stable thread id; hashing large pastes is wasteful). */
+/**
+ * Session identity text: the user's first prompt, skipping harness envelopes
+ * (see {@link sessionAnchorText}). Scans every user message before the first
+ * assistant turn, because a client may send its envelope as a message of its own.
+ */
 export function firstUserText(req: MessagesRequest): string {
-  const msgs = req.messages ?? [];
-  for (const m of msgs) {
+  const texts: string[] = [];
+  for (const m of req.messages ?? []) {
+    if (m.role === 'assistant') break;
     if (m.role !== 'user') continue;
-    if (typeof m.content === 'string') return m.content.slice(0, 4096);
-    if (Array.isArray(m.content)) {
+    if (typeof m.content === 'string') {
+      texts.push(m.content);
+    } else if (Array.isArray(m.content)) {
       for (const block of m.content) {
         const probe = block as { type?: unknown; text?: unknown } | null;
         if (probe && probe.type === 'text' && typeof probe.text === 'string') {
-          return probe.text.slice(0, 4096);
+          texts.push(probe.text);
         }
       }
     }
-    // First user message found but unreadable — return empty rather than fall through to next.
-    return '';
   }
-  return '';
+  return sessionAnchorText(texts);
+}
+
+async function recordSessionIdentity(
+  info: TransformInfo,
+  anchor: string,
+  clientId?: string,
+  cwd?: string,
+): Promise<void> {
+  if (!anchor) return;
+  info.firstUserSha8 = await sha8(anchor);
+  const fromClient = typeof clientId === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(clientId);
+  const scopeId = fromClient ? `cc-session:${clientId}` : cwd ? `cc-cwd:${cwd}` : null;
+  info.sessionKey = scopeId
+    ? await sha8(scopeId + '\n' + anchor)
+    : info.firstUserSha8;
+  info.sessionKeySource = fromClient ? 'client' : cwd ? 'cwd' : 'anchor';
 }
 
 /** Parse structured fields from the dynamic slab for telemetry. Read-only. */
@@ -1566,6 +1618,26 @@ function approxBlockBytes(blk: ImageBlock): number {
 
 // --- main transform --------------------------------------------------------
 
+const HISTORY_IMAGE_SAFETY_MARGIN = 5;
+
+export function imageHeadroom(info: TransformInfo): number {
+  return Math.max(
+    0,
+    ANTHROPIC_MAX_IMAGES -
+      HISTORY_IMAGE_SAFETY_MARGIN -
+      info.imageCount -
+      (info.nativeImages ?? 0),
+  );
+}
+
+function historyGridTuning(
+  info: TransformInfo,
+): { imageBudget: number; packFill: boolean; minFreezeStep: number } {
+  const headroom = imageHeadroom(info);
+  const imageBudget = Math.max(1, Math.min(ANTHROPIC_HISTORY_IMAGE_BUDGET, headroom));
+  const session = noteHistoryRequest(info.sessionKey ?? info.firstUserSha8);
+  return { imageBudget, packFill: session.cold, minFreezeStep: session.minFreezeStep };
+}
 
 /**
  * Run history-image compression on `req.messages` and finalize the body.
@@ -1587,6 +1659,7 @@ async function runHistoryCollapseAndFinalize(
       ? o.charsPerToken
       : HISTORY_CHARS_PER_TOKEN;
     const horizon = Math.max(1, Math.floor(o.historyAmortizationHorizon));
+
     // Pass the symmetric warm-cache burn through to the history-collapse
     // gate as well. The slab gate alone got the symmetric treatment, which
     // let the history gate flip a session out of image mode even when
@@ -1606,6 +1679,7 @@ async function runHistoryCollapseAndFinalize(
     // No protectedPrefix here: this path runs only when the slab did NOT image
     // (it stays as text in req.system), so there is no slab message to shield —
     // collapsing from the head is correct.
+    const tuning = historyGridTuning(info);
     const { messages: newMessages, info: histInfo } = await collapseHistory(
       req.messages,
       historyProfitable,
@@ -1614,36 +1688,51 @@ async function runHistoryCollapseAndFinalize(
         cols: o.cols, protectedPrefix: 0, reflow: o.reflow,
         preserveReminderText: o.compressSystem === false,
         denseCols: page.cols, denseCharsPerImage: page.charsPerImage, maxHeightPx: page.maxHeightPx,
+        separateAdjacentToolPairs: o.separateAdjacentToolPairs,
+        imageBudget: tuning.imageBudget,
+        packFill: tuning.packFill,
+        minFreezeStep: tuning.minFreezeStep,
       },
     );
     // Mirrors the slab/reminder/tool_result lanes above: sum unconditionally,
     // not just on the collapsedTurns>0 branch — mode=text can find hits and
     // abort the collapse (reason='secret_kept_text') with collapsedTurns==0.
     if (histInfo.secretHits) info.secretHits = (info.secretHits ?? 0) + histInfo.secretHits;
-    if (histInfo.collapsedTurns > 0) {
-      req.messages = newMessages;
-      info.collapsedTurns = histInfo.collapsedTurns;
-      info.collapsedChars = histInfo.collapsedChars;
-      info.collapsedImages = histInfo.collapsedImages;
-      info.imageCount += histInfo.collapsedImages;
-      info.imageBytes += histInfo.collapsedImageBytes;
-      info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
-      // Register the rendered (colored) history PNGs into the dashboard image ring
-      // so they are visible, not merely counted. Every other image path feeds this.
-      // imagePngs + imageDims must be pushed in lockstep (ring reads them parallel).
-      (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
-      (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
+    const renderLossy = o.requireLosslessRender && histInfo.droppedChars > 0;
+    if (renderLossy) {
+      info.historyReason = 'render_lossy';
       info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
       for (const [cp, n] of histInfo.droppedCodepoints) {
         droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
       }
-      info.historyReason = 'collapsed';
-      info.historyTextChars = histInfo.collapsedChars;
-      info.historyImageSha = await historyImageSha8(newMessages);
-      bumpBucket(info, 'history', histInfo.collapsedChars);
-      collapsedFlag = true;
-    } else if (histInfo.reason) {
-      info.historyReason = histInfo.reason;
+    } else {
+      recordFreezeStep(info.sessionKey ?? info.firstUserSha8, histInfo.freezeStep);
+      if (histInfo.freezeStep !== undefined) info.historyFreezeStep = histInfo.freezeStep;
+      if (histInfo.budgetTrimmed) info.historyBudgetTrimmed = true;
+      if (tuning.packFill) info.historyPackFill = true;
+      if (histInfo.collapsedTurns > 0) {
+        if (o.separateAdjacentToolPairs) info.historySplitAdjacentPairs = true;
+        req.messages = newMessages;
+        info.collapsedTurns = histInfo.collapsedTurns;
+        info.collapsedChars = histInfo.collapsedChars;
+        info.collapsedImages = histInfo.collapsedImages;
+        info.imageCount += histInfo.collapsedImages;
+        info.imageBytes += histInfo.collapsedImageBytes;
+        info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
+        (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
+        (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
+        info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
+        for (const [cp, n] of histInfo.droppedCodepoints) {
+          droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
+        }
+        info.historyReason = 'collapsed';
+        info.historyTextChars = histInfo.collapsedChars;
+        info.historyImageSha = await historyImageSha8(newMessages);
+        bumpBucket(info, 'history', histInfo.collapsedChars);
+        collapsedFlag = true;
+      } else if (histInfo.reason) {
+        info.historyReason = histInfo.reason;
+      }
     }
   }
   info.outgoingTextChars = countOutgoingTextChars(req);
@@ -1740,12 +1829,10 @@ export async function transformRequest(
   // systemSha8 is set later, after we know the combined image-bound text.
   const claudeMdSlab = extractClaudeMdSlab(staticText);
   const firstUser = firstUserText(req);
-  const [claudeMdSha, firstUserSha] = await Promise.all([
-    claudeMdSlab ? sha8(claudeMdSlab) : Promise.resolve(undefined),
-    firstUser ? sha8(firstUser) : Promise.resolve(undefined),
-  ]);
+  const claudeMdSha = claudeMdSlab ? await sha8(claudeMdSlab) : undefined;
   if (claudeMdSha) info.claudeMdSha8 = claudeMdSha;
-  if (firstUserSha) info.firstUserSha8 = firstUserSha;
+  await recordSessionIdentity(info, firstUser, o.claudeCodeSessionId, info.env?.cwd);
+  const firstUserSha = info.firstUserSha8;
 
   // Canary: slab tags whose content churns within a session bust the image
   // cache every turn — report them regardless of the hardcoded lists.
@@ -2382,6 +2469,7 @@ export async function transformRequest(
       );
     };
     const slabAnchorIdx = (req.messages ?? []).findIndex((m) => m.role === 'user');
+    const tuning = historyGridTuning(info);
     const { messages: newMessages, info: histInfo } = await collapseHistory(
       req.messages,
       historyProfitable,
@@ -2390,48 +2478,66 @@ export async function transformRequest(
         cols: o.cols, protectedPrefix: slabAnchorIdx >= 0 ? slabAnchorIdx + 1 : 0, reflow: o.reflow,
         preserveReminderText: keepSystemText,
         denseCols: page.cols, denseCharsPerImage: page.charsPerImage, maxHeightPx: page.maxHeightPx,
+        separateAdjacentToolPairs: o.separateAdjacentToolPairs,
+        imageBudget: tuning.imageBudget,
+        packFill: tuning.packFill,
+        minFreezeStep: tuning.minFreezeStep,
       },
     );
     // Mirrors the slab/reminder/tool_result lanes above: sum unconditionally,
     // not just on the collapsedTurns>0 branch — mode=text can find hits and
     // abort the collapse (reason='secret_kept_text') with collapsedTurns==0.
     if (histInfo.secretHits) info.secretHits = (info.secretHits ?? 0) + histInfo.secretHits;
-    if (histInfo.collapsedTurns > 0) {
-      req.messages = newMessages;
-      info.collapsedTurns = histInfo.collapsedTurns;
-      info.collapsedChars = histInfo.collapsedChars;
-      info.collapsedImages = histInfo.collapsedImages;
-      info.imageCount += histInfo.collapsedImages;
-      info.imageBytes += histInfo.collapsedImageBytes;
-      info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
-      // Register the rendered (colored) history PNGs into the dashboard image ring
-      // so they are visible, not merely counted. Every other image path feeds this.
-      // imagePngs + imageDims must be pushed in lockstep (ring reads them parallel).
-      (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
-      (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
+    const renderLossy = o.requireLosslessRender && histInfo.droppedChars > 0;
+    if (renderLossy) {
+      info.historyReason = 'render_lossy';
       info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
       for (const [cp, n] of histInfo.droppedCodepoints) {
         droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
       }
-      info.historyReason = 'collapsed';
-      info.historyTextChars = histInfo.collapsedChars;
-      info.historyImageSha = await historyImageSha8(newMessages);
-      bumpBucket(info, 'history', histInfo.collapsedChars);
-      // Move the single cache anchor onto the history image so slab + history
-      // cache as one stable prefix (created once, then read), instead of the
-      // history image re-creating whenever the caller's downstream marker moves.
-      //
-      // ONLY when collapseHistory pinned a byte-frozen carry-over chunk. On the
-      // session's FIRST collapse the range fits in one freeze window, no carry-over
-      // exists (ordinal undefined), and relocating would land the anchor on the
-      // newest still-growing history image — a volatile breakpoint that forced a
-      // one-time full-prefix rewrite (~53k tokens/session). Leave the anchor on
-      // the byte-stable slab image until a frozen chunk exists to pin to.
-      if (histInfo.carryOverImageOrdinal !== undefined) {
-        relocateAnchorToHistoryImage(req.messages, histInfo.carryOverImageOrdinal);
+    } else {
+      recordFreezeStep(info.sessionKey ?? info.firstUserSha8, histInfo.freezeStep);
+      if (histInfo.freezeStep !== undefined) info.historyFreezeStep = histInfo.freezeStep;
+      if (histInfo.budgetTrimmed) info.historyBudgetTrimmed = true;
+      if (tuning.packFill) info.historyPackFill = true;
+      if (histInfo.collapsedTurns > 0) {
+        if (o.separateAdjacentToolPairs) info.historySplitAdjacentPairs = true;
+        req.messages = newMessages;
+        info.collapsedTurns = histInfo.collapsedTurns;
+        info.collapsedChars = histInfo.collapsedChars;
+        info.collapsedImages = histInfo.collapsedImages;
+        info.imageCount += histInfo.collapsedImages;
+        info.imageBytes += histInfo.collapsedImageBytes;
+        info.imagePixels = (info.imagePixels ?? 0) + histInfo.collapsedImagePixels;
+        // Register the rendered (colored) history PNGs into the dashboard image ring
+        // so they are visible, not merely counted. Every other image path feeds this.
+        // imagePngs + imageDims must be pushed in lockstep (ring reads them parallel).
+        (info.imagePngs ??= []).push(...histInfo.collapsedPngs);
+        (info.imageDims ??= []).push(...histInfo.collapsedImageDims);
+        info.droppedChars = (info.droppedChars ?? 0) + histInfo.droppedChars;
+        for (const [cp, n] of histInfo.droppedCodepoints) {
+          droppedCodepoints.set(cp, (droppedCodepoints.get(cp) ?? 0) + n);
+        }
+        info.historyReason = 'collapsed';
+        info.historyTextChars = histInfo.collapsedChars;
+        info.historyImageSha = await historyImageSha8(newMessages);
+        bumpBucket(info, 'history', histInfo.collapsedChars);
+        // Move the single cache anchor onto the history image so slab + history
+        // cache as one stable prefix (created once, then read), instead of the
+        // history image re-creating whenever the caller's downstream marker moves.
+        //
+        // ONLY when collapseHistory pinned a byte-frozen carry-over chunk. On the
+        // session's FIRST collapse the range fits in one freeze window, no carry-over
+        // exists (ordinal undefined), and relocating would land the anchor on the
+        // newest still-growing history image — a volatile breakpoint that forced a
+        // one-time full-prefix rewrite (~53k tokens/session). Leave the anchor on
+        // the byte-stable slab image until a frozen chunk exists to pin to.
+        if (histInfo.carryOverImageOrdinal !== undefined) {
+          relocateAnchorToHistoryImage(req.messages, histInfo.carryOverImageOrdinal);
+        }
+      } else if (histInfo.reason) {
+        info.historyReason = histInfo.reason;
       }
-    } else if (histInfo.reason) {
-      info.historyReason = histInfo.reason;
     }
   }
 

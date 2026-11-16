@@ -1,5 +1,8 @@
 /** Applicability helpers for OmniGlyph's production-safe model scope. */
 
+import { isClaudeModel } from './claude-model-profiles.js';
+import { isGeminiModel } from './gemini-model-profiles.js';
+
 export type OmniGlyphApplicabilityReason =
   | 'eligible'
   | 'unsupported_model'
@@ -12,6 +15,7 @@ export type OmniGlyphSafetyScope =
   | 'coding-safe'
   | 'balanced'
   | 'aggressive'
+  | 'smart-aggressive'
   | 'passthrough';
 
 export interface OmniGlyphApplicabilityInput {
@@ -79,6 +83,9 @@ function configuredModelBases(): string[] {
 
 function parseSafetyScope(raw: string | undefined): OmniGlyphSafetyScope {
   const value = (raw ?? '').trim().toLowerCase();
+  if (value === 'smart-aggressive' || value === 'smart_aggressive' || value === 'smart') {
+    return 'smart-aggressive';
+  }
   if (!value || value === 'aggressive' || value === 'legacy') return 'aggressive';
   if (value === 'safe' || value === 'coding' || value === 'coding-safe') {
     return 'coding-safe';
@@ -102,9 +109,37 @@ function safetyAllowsConfiguredBase(
   scope: OmniGlyphSafetyScope,
 ): boolean {
   if (scope === 'passthrough') return false;
-  if (scope === 'aggressive') return true;
+  if (scope === 'aggressive' || scope === 'smart-aggressive') return true;
   const id = baseModelId(candidate).toLowerCase();
   return DEFAULT_MODEL_BASES.some((safe) => modelBaseMatches(id, safe));
+}
+
+const SUPPORTED_MODEL_PATTERNS: readonly RegExp[] = [
+  // Claude: Fable 5.x, Opus 4.8 / 5.x, Sonnet 4.5 / 5.x, Haiku 4.5 / 5.x
+  /^claude-fable-5(?:\.\d+)?(?:-|$)/i,
+  /^claude-opus-(?:4\.8|4-8|5(?:\.\d+)?|5-\d+)(?:-|$)/i,
+  /^claude-sonnet-(?:4\.5|4-5|5(?:\.\d+)?|5-\d+)(?:-|$)/i,
+  /^claude-haiku-(?:4\.5|4-5|5(?:\.\d+)?|5-\d+)(?:-|$)/i,
+  // GPT: Sol, Astra, Luna, Terra, GPT-6, GPT-5.6, GPT-5.5, GPT-5-chat-latest, mini/nano
+  /^gpt-(?:5\.6|6(?:\.1)?)-sol(?:-|$)/i,
+  /^gpt-6-(?:astra|luna)(?:-|$)/i,
+  /^gpt-(?:5\.6|6(?:\.1)?)-terra(?:-|$)/i,
+  /^gpt-6(?:\.\d+)?(?:-|$)/i,
+  /^gpt-5\.(?:5|6)(?:-|$)/i,
+  /^gpt-5-chat-latest(?:-|$)/i,
+  /^gpt-5-(?:mini|nano)(?:-|$)/i,
+  // Gemini & AGY
+  /^gemini-3\.(?:6|8)(?:-flash)?(?:-thinking)?(?:-|$)/i,
+  /^gemini-4-(?:argon|carbon|krypton|hydrogen)(?:-|$)/i,
+  /^gemini(?:-(?:pro|flash))?$/i,
+  /^antigravity-3\.6-flash(?:-preview)?(?:-|$)/i,
+  /^agy(?:-|$)/i,
+  // Grok
+  /^grok(?:-|$)/i,
+];
+
+function isModelFamilySupported(base: string): boolean {
+  return SUPPORTED_MODEL_PATTERNS.some((pattern) => pattern.test(base));
 }
 
 function allowedModelBasesForScope(scope: OmniGlyphSafetyScope): string[] {
@@ -149,6 +184,21 @@ export function isOmniGlyphSupportedModelForScope(
   model: string | null | undefined,
   scope: OmniGlyphSafetyScope,
 ): boolean {
+  if (typeof model !== 'string') return false;
+  if (scope === 'passthrough') return false;
+  const base = baseModelId(model).toLowerCase();
+  if (scope === 'aggressive' || scope === 'smart-aggressive') {
+    if (runtimeModelBases !== null) {
+      return runtimeModelBases.some((candidate) => modelBaseMatches(base, candidate));
+    }
+    const envBases = typeof process !== 'undefined' && process.env?.OMNIGLYPH_MODELS ? process.env.OMNIGLYPH_MODELS.trim() : undefined;
+    if (envBases !== undefined) {
+      if (falsey(envBases)) return false;
+      const parsed = envBases.split(',').map((s: string) => s.trim()).filter(Boolean);
+      return parsed.some((candidate: string) => modelBaseMatches(base, candidate));
+    }
+    return isModelFamilySupported(base);
+  }
   return isAllowedForScope(model, scope);
 }
 

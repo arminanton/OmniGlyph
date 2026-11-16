@@ -15,6 +15,7 @@ import {
   CELL_W,
   CELL_H,
   READABLE_CHARS_PER_IMAGE,
+  neutralizeSentinel,
   type RenderedImage,
 } from './render.js';
 import {
@@ -65,6 +66,8 @@ export function resolveVisionCost(model: string): VisionCost {
 // on the turn-attribution wording — the exact divergence history.ts warns about.
 export const HISTORY_TRANSCRIPT_INTRO = HISTORY_SYNTHETIC_INTRO;
 export const HISTORY_TRANSCRIPT_OUTRO = HISTORY_SYNTHETIC_OUTRO;
+export const COMPACT_HISTORY_TRANSCRIPT_INTRO = HISTORY_SYNTHETIC_INTRO;
+export const COMPACT_HISTORY_TRANSCRIPT_OUTRO = HISTORY_SYNTHETIC_OUTRO;
 // The most-recent user request is kept as LEGIBLE TEXT (never imaged) and spliced
 // between the before/after history images inside the synthetic user message, under
 // this banner. Older user turns stay imaged (they must not look live). This is the
@@ -76,7 +79,7 @@ const PINNED_REQUEST_HEADER =
 const PINNED_REQUEST_FOOTER =
   '\n===== END CURRENT USER REQUEST =====\n';
 
-function pinnedRequestBlock(text: string): string {
+export function pinnedRequestBlock(text: string): string {
   return PINNED_REQUEST_HEADER + text + PINNED_REQUEST_FOOTER;
 }
 
@@ -84,7 +87,7 @@ function pinnedRequestBlock(text: string): string {
 // echoes it verbatim (capped) and points at the in-history text block; otherwise it
 // falls back to "the live request is the trailing user message" (interactive shape,
 // where the latest user turn is already native text in the kept tail).
-function buildLiveRequestGuard(pinText?: string): string {
+export function buildLiveRequestGuard(pinText?: string): string {
   if (pinText !== undefined) {
     const echo = pinText.length > 600 ? pinText.slice(0, 600) + '…' : pinText;
     return (
@@ -309,9 +312,16 @@ function emptyInfo(reason?: string): TransformInfo {
  *  caller must keep this slab as native, uncompressed text (same path as the
  *  gate declining) rather than append IDS/render — `text` is then the ORIGINAL
  *  (unmasked) input, since it will never reach the renderer. */
-function prepareImagedRenderText(text: string): { text: string; blocked: boolean; hits: number } {
-  const g = guardImagedText(text);
-  return { text: g.blocked ? text : appendIdsBlock(g.text), blocked: g.blocked, hits: g.hits };
+export function prepareImagedRenderText(text: string): { text: string; blocked: boolean; hits: number };
+export function prepareImagedRenderText(text: string, reflowEnabled: boolean): string;
+export function prepareImagedRenderText(text: string, reflowEnabled?: boolean): { text: string; blocked: boolean; hits: number } | string {
+  if (reflowEnabled === undefined) {
+    const g = guardImagedText(text);
+    return { text: g.blocked ? text : appendIdsBlock(g.text), blocked: g.blocked, hits: g.hits };
+  }
+  const safe = neutralizeSentinel(text.trimEnd());
+  const reflowed = reflowEnabled ? (reflow(safe) ?? safe) : safe;
+  return appendIdsBlock(guardImagedText(reflowed).text);
 }
 
 function maybeReflow(text: string, enabled: boolean): string {
@@ -396,6 +406,44 @@ function isFlatFunctionTool(tool: unknown): tool is ResponsesFlatTool {
     && (tool as { type?: unknown }).type === 'function'
     && typeof (tool as { name?: unknown }).name === 'string'
   );
+}
+
+export function schemaAnnotationLines(node: unknown, path = '$', depth = 0): string[] {
+  if (!node || typeof node !== 'object' || depth > 20) return [];
+  if (Array.isArray(node)) {
+    return node.flatMap((value, i) => schemaAnnotationLines(value, `${path}[${i}]`, depth + 1));
+  }
+  const obj = node as Record<string, unknown>;
+  const out: string[] = [];
+  for (const key of ['description', 'title', 'examples', 'default', '$comment']) {
+    if (obj[key] !== undefined) out.push(`${path} ${key}: ${JSON.stringify(obj[key])}`);
+  }
+  if (typeof obj.format === 'string' && obj.format.length > 32) {
+    out.push(`${path} format: ${JSON.stringify(obj.format)}`);
+  }
+  for (const key of ['properties', 'patternProperties', 'definitions', '$defs']) {
+    const children = obj[key];
+    if (!children || typeof children !== 'object' || Array.isArray(children)) continue;
+    for (const [name, child] of Object.entries(children as Record<string, unknown>)) {
+      out.push(...schemaAnnotationLines(child, `${path}.${name}`, depth + 1));
+    }
+  }
+  for (const key of ['oneOf', 'anyOf', 'allOf']) {
+    const children = obj[key];
+    if (!Array.isArray(children)) continue;
+    children.forEach((child, i) => {
+      out.push(...schemaAnnotationLines(child, `${path}.${key}[${i}]`, depth + 1));
+    });
+  }
+  for (const key of [
+    'items', 'additionalProperties', 'not', 'contains', 'propertyNames',
+    'unevaluatedItems', 'unevaluatedProperties', 'if', 'then', 'else',
+  ]) {
+    if (obj[key] !== undefined) {
+      out.push(...schemaAnnotationLines(obj[key], `${path}.${key}`, depth + 1));
+    }
+  }
+  return out;
 }
 
 /** Full doc (prose + compact schema JSON) for one tool. On this path the docs are
@@ -607,7 +655,7 @@ function safeStringifyLen(v: unknown): number {
   }
 }
 
-function droppedCodepointsTop(droppedCodepoints: Map<number, number>): Record<string, number> | undefined {
+export function droppedCodepointsTop(droppedCodepoints: Map<number, number>): Record<string, number> | undefined {
   if (droppedCodepoints.size === 0) return undefined;
   const out: Record<string, number> = {};
   for (const [cp, count] of [...droppedCodepoints.entries()]

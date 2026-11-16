@@ -222,3 +222,8 @@ export function normalizeAccounting(input: AccountingInput): NormalizedAccountin
     ...(input.bypassReason ? { bypassReason: input.bypassReason } : {}),
   };
 }
+
+/** Alias for normalizeAccounting to satisfy OmniGlyph telemetry consumers. */
+export function buildOmniGlyphAccounting(input: AccountingInput): NormalizedAccounting {
+  return normalizeAccounting(input);
+}

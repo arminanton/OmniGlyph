@@ -1,6 +1,7 @@
 export {
   getAllowedModelBases,
   getConfiguredModelBases,
+  isModelImageable,
   isOmniGlyphSupportedGptModel,
   isOmniGlyphSupportedModel,
   isOmniGlyphSupportedModelForScope,
@@ -58,6 +59,7 @@ export {
   CACHE_READ_RATE,
 } from './baseline.js';
 export {
+  buildOmniGlyphAccounting,
   normalizeAccounting,
   providerActualInputTokens,
   type AccountingInput,
@@ -65,3 +67,5 @@ export {
   type NormalizedAccounting,
   type SavingsEvidence,
 } from './accounting.js';
+export { transformGoogleGenerateContent } from './google.js';
+export { transformAntigravityGenerateContent } from './antigravity.js';

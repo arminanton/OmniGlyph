@@ -1,20 +1,10 @@
-/**
- * Gemini vision billing + dense-page geometry.
- * Ground truth (docs captured 2026-07-05, see docs/ROADMAP.md Phase 1):
- *  - ai.google.dev/gemini-api/docs/image-understanding — tiling: both dims
- *    ≤384 px → flat 258 tokens; larger → crop unit = floor(min(w,h)/1.5),
- *    tiles = ceil(w/unit) × ceil(h/unit), 258 each (official example:
- *    960×540 → unit 360 → 3×2 = 6 tiles = 1548). The doc qualifies the crop
- *    unit with "roughly" — calibrate with countTokens near tile boundaries.
- *  - .../media-resolution — media_resolution overrides with a FIXED per-image
- *    cost: Gemini 3 low/medium/high/ultra_high = 280/560/1120/2240 (default
- *    high=1120); Gemini 2.5 low/medium = 64/256.
- *
- * Structural consequence of the tile formula: the smaller dimension always
- * costs 2 tile rows (min/unit ≈ 1.5 → ceil 2), so max utilization on that
- * axis is 75% — and the crop unit equals the NATIVE 768 px tile resolution
- * (zero glyph resampling) only when min(w,h) ∈ [1152, 1153].
- */
+import {
+  MAX_HEIGHT_PX as ANTHROPIC_MAX_HEIGHT_PX,
+  ANTHROPIC_SLAB_COLS as ANTHROPIC_STRIP_COLS,
+} from './render.js';
+import { BASE_PRICING } from './profile-base.js';
+import { visionTokens } from './vision-cost.js';
+import type { GptModelProfile } from './gpt-model-profiles.js';
 
 export type GeminiGeneration = '3' | '2.5';
 
@@ -32,9 +22,7 @@ const MEDIA_RESOLUTION_TOKENS: Record<GeminiGeneration, Partial<Record<GeminiMed
   '2.5': { low: 64, medium: 256 },
 };
 
-/** Fixed per-image cost under a media_resolution override. Levels absent from
- *  a generation's table (e.g. ultra_high on 2.5) throw — better to fail at the
- *  gate than to silently underestimate. */
+/** Fixed per-image cost under a media_resolution override. */
 export function geminiMediaResolutionTokens(level: GeminiMediaResolution, generation: GeminiGeneration): number {
   const tokens = MEDIA_RESOLUTION_TOKENS[generation][level];
   if (tokens === undefined) {
@@ -43,20 +31,138 @@ export function geminiMediaResolutionTokens(level: GeminiMediaResolution, genera
   return tokens;
 }
 
-/** Family classifier. Unknown ids resolve to '3' (current generation — its
- *  fixed-cost table is the conservative default for the gate). */
+/** Family classifier. Unknown ids resolve to '3'. */
 export function resolveGeminiGeneration(model: string | null | undefined): GeminiGeneration {
   if (typeof model === 'string' && /^gemini-2\./.test(model)) return '2.5';
   return '3';
 }
 
 /**
- * Dense-page geometry for the tiling regime, derived from the renderer grid
- * (width = 8 + cols×5, height = 8 + rows×8):
- * the min side must be 1152 px EXACTLY for the crop unit to land on the
- * native 768 px tile. Width can't hit 1152 on the 5 px grid, but HEIGHT can
- * (8 + 143×8 = 1152) — so the page is landscape: 1533×1152 = 2×2 tiles =
- * 1032 tokens, 305×143 = 43,615 chars → 42.3 chars/token, the best
- * documented ratio across the three providers (Anthropic ≈19, GPT ≤33).
+ * Dense-page geometry for the tiling regime, derived from the renderer grid.
  */
 export const GEMINI_TILE_PAGE = { cols: 305, maxHeightPx: 1152, charsPerImage: 43615 } as const;
+
+/** Legacy Gemini 3.x Flash profile (1568×728, 312×90 at 5×8 = 49×22 = 1,078 ViT patches). */
+export const GEMINI_LEGACY_PROFILE: GptModelProfile = {
+  // Flat per-image charge. Live usage measured the exact production canvas at
+  // 1,078 IMAGE tokens; other measured shapes ranged up to 1,113 and Google's
+  // Gemini 3 docs publish an approximate 1,120-token default/high image budget,
+  // so that documented ceiling prices partial pages and width-shrunk slabs.
+  vision: { regime: 'flat', tokens: 1120, exact: { widthPx: 1568, heightPx: 728, tokens: 1078 } },
+  ...BASE_PRICING,
+  cacheReadRate: 0.25,
+  stripCols: ANTHROPIC_STRIP_COLS,
+  maxHeightPx: ANTHROPIC_MAX_HEIGHT_PX,
+  minCompressTokens: 500,
+  factSheetFormat: 'compact',
+  history: {
+    maxImages: 32,
+    keepTail: 4,
+    keepRecentPairs: 4,
+    minCollapseTokens: 2000,
+    responsesMode: 'pairs',
+    framing: 'compact',
+    factSheetScope: 'combined',
+  },
+  style: {
+    font: 'spleen-5x8',
+    cellWBonus: 0,
+    cellHBonus: 0,
+    aa: true,
+    grid: false,
+    gridCols: 0,
+    colorCycle: false,
+    markerScale: 1,
+    markerRed: false,
+    inkDilate: 0,
+  },
+};
+
+export const GEMINI_3_6_FLASH_PROFILE: GptModelProfile = GEMINI_LEGACY_PROFILE;
+
+/** Dedicated Gemini 4+ profile. Shares the validated 1568×728 (49×22 patch)
+ *  canvas geometry while raising the history page ceiling from the legacy 32-page
+ *  cap to 96 pages (matching CLAUDE_PROFILE) and using 'mixed' responses grouping
+ *  so long multi-hundred-turn agent sessions stay collapsed past 32 pages. */
+export const GEMINI_PROFILE: GptModelProfile = {
+  ...GEMINI_LEGACY_PROFILE,
+  history: {
+    ...GEMINI_LEGACY_PROFILE.history,
+    maxImages: 96,
+    responsesMode: 'mixed',
+  },
+  style: { ...GEMINI_LEGACY_PROFILE.style },
+};
+
+const GEMINI_MEASURED_PROFILES: Readonly<Record<string, GptModelProfile>> = {
+  'gemini-3.6-flash': GEMINI_LEGACY_PROFILE,
+  'gemini-3.6-flash-thinking': GEMINI_LEGACY_PROFILE,
+  'gemini-3.7-flash': GEMINI_LEGACY_PROFILE,
+  'gemini-3.8-flash': GEMINI_LEGACY_PROFILE,
+  'gemini-3.8-flash-high': GEMINI_LEGACY_PROFILE,
+  'gemini-3.8-flash-medium': GEMINI_LEGACY_PROFILE,
+  'gemini-3.8-flash-low': GEMINI_LEGACY_PROFILE,
+  'gemini-3.1-flash': GEMINI_LEGACY_PROFILE,
+  'gemini-3.1-flash-lite': GEMINI_LEGACY_PROFILE,
+  'antigravity-3.6-flash-preview': GEMINI_LEGACY_PROFILE,
+  'gemini-4': GEMINI_PROFILE,
+  'gemini-4-flash': GEMINI_PROFILE,
+  'gemini-4-pro': GEMINI_PROFILE,
+  'gemini-4-argon': GEMINI_PROFILE,
+  'gemini-4-argon-high': GEMINI_PROFILE,
+  'gemini-4-argon-medium': GEMINI_PROFILE,
+  'gemini-4-argon-low': GEMINI_PROFILE,
+  'gemini-4-carbon': GEMINI_PROFILE,
+  'gemini-4-krypton': GEMINI_PROFILE,
+  'gemini-4-hydrogen': GEMINI_PROFILE,
+};
+function normalizeGeminiId(model: string | null | undefined): string {
+  const id = (model ?? '').toLowerCase();
+  const slash = id.lastIndexOf('/');
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+export function isGeminiModel(model: string | null | undefined): boolean {
+  const id = normalizeGeminiId(model);
+  return id.startsWith('gemini-') || id === 'gemini' || id.startsWith('antigravity-') || id.startsWith('agy-');
+}
+
+/** True for Gemini models with a validated or forward-compatible profile.
+ *  Supports 3.8+, 3.9+, 4+, 5+, Pro, and registered 3.6/3.7/3.1 flash models. */
+export function hasGeminiMeasuredProfile(model: string | null | undefined): boolean {
+  const id = normalizeGeminiId(model);
+  if (!id) return false;
+  if (id in GEMINI_MEASURED_PROFILES) return true;
+  if (id === 'gemini-pro' || id === 'gemini-flash' || id === 'gemini' || id.startsWith('antigravity-') || id.startsWith('agy-')) return true;
+  const m = id.match(/^gemini-(\d+)(?:\.(\d+))?/);
+  if (!m) return false;
+  const major = parseInt(m[1]!, 10);
+  const minor = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+  if (major === 3) {
+    return minor >= 6;
+  }
+  return major > 3;
+}
+
+export function resolveGeminiProfile(model?: string | null): GptModelProfile {
+  if (model) {
+    const id = normalizeGeminiId(model);
+    const prof = GEMINI_MEASURED_PROFILES[id];
+    if (prof) return prof;
+    if (id.startsWith('gemini-3.') || id === 'gemini-3' || id.includes('3.6') || id.includes('3.7') || id.includes('3.8')) return GEMINI_LEGACY_PROFILE;
+  }
+  return GEMINI_PROFILE;
+}
+
+/** Gemini image tokens for any supported Gemini model using the validated
+ *  flat-regime tile geometry (1,078 image tokens for 1568x728). */
+export function geminiVisionTokens(model: string, w: number, h: number): number {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    throw new Error(`Invalid Gemini image dimensions: ${w}x${h}`);
+  }
+  if (!hasGeminiMeasuredProfile(model)) {
+    throw new Error(`Unsupported Gemini model for image tokens: ${model}`);
+  }
+  const prof = resolveGeminiProfile(model);
+  return visionTokens(prof, w, h);
+}

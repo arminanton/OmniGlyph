@@ -6,6 +6,7 @@ export type CompressionProfileName =
   | 'coding-safe'
   | 'balanced'
   | 'aggressive'
+  | 'smart-aggressive'
   | 'passthrough';
 
 export interface CompressionProfile {
@@ -97,6 +98,7 @@ const PROFILES: Record<CompressionProfileName, CompressionProfile> = {
       collapseHistory: true,
       historyAmortizationHorizon: 4,
       reflow: true,
+      requireLosslessRender: true,
       anthropicHistory: { keepTail: 12, minCollapsePrefix: 16 },
       gptHistory: {
         keepTail: 12,
@@ -120,6 +122,7 @@ const PROFILES: Record<CompressionProfileName, CompressionProfile> = {
       collapseHistory: true,
       historyAmortizationHorizon: 3,
       reflow: true,
+      requireLosslessRender: true,
       anthropicHistory: { keepTail: 8, minCollapsePrefix: 12 },
       gptHistory: {
         keepTail: 8,
@@ -135,6 +138,19 @@ const PROFILES: Record<CompressionProfileName, CompressionProfile> = {
     description: 'existing transform policy',
     transform: {},
   },
+  'smart-aggressive': {
+    name: 'smart-aggressive',
+    description: 'compress system prompt, tool declarations, and conversation history immediately; keep compiler errors, diffs, and stack traces crisp text',
+    transform: {
+      compress: true,
+      compressSystem: true,
+      compressTools: true,
+      compressReminders: true,
+      compressToolResults: true,
+      collapseHistory: true,
+      keepSharp: shouldKeepToolResultSharp,
+    },
+  },
   passthrough: {
     name: 'passthrough',
     description: 'route only; disable context transforms',
@@ -149,11 +165,14 @@ export function resolveCompressionProfile(raw?: string): CompressionProfile {
     return PROFILES['coding-safe'];
   }
   if (value === 'balanced') return PROFILES.balanced;
+  if (value === 'smart-aggressive' || value === 'smart_aggressive' || value === 'smart') {
+    return PROFILES['smart-aggressive'];
+  }
   if (value === 'off' || value === 'disabled' || value === 'passthrough') {
     return PROFILES.passthrough;
   }
   throw new Error(
-    `invalid OMNIGLYPH_PROFILE '${raw}'; expected coding-safe, balanced, aggressive or passthrough`,
+    `invalid OMNIGLYPH_PROFILE '${raw}'; expected coding-safe, balanced, aggressive, smart-aggressive or passthrough`,
   );
 }
 
@@ -215,6 +234,18 @@ export function mergeCompressionProfileOptions(
 
   if (profile.name === 'passthrough') return { ...merged, compress: false };
   if (profile.name === 'aggressive') return merged;
+  if (profile.name === 'smart-aggressive') {
+    return {
+      ...merged,
+      compress: overrides.compress === false ? false : true,
+      compressSystem: overrides.compressSystem === false ? false : true,
+      compressTools: overrides.compressTools === false ? false : true,
+      compressReminders: overrides.compressReminders === false ? false : true,
+      compressToolResults: overrides.compressToolResults === false ? false : true,
+      collapseHistory: overrides.collapseHistory === false ? false : true,
+      keepSharp,
+    };
+  }
 
   return {
     ...merged,

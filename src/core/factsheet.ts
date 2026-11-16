@@ -253,7 +253,7 @@ export function factSheetTextFromEntries(entries: readonly FactSheetEntry[]): st
 /** One-line fact-sheet string for `text`, or `''` when nothing notable was found.
  *  Single path for slab, history, and tool results: page long text so early-turn
  *  ids are not dropped by MAX_SCAN. Short text is one page (same as before). */
-export function factSheetText(text: string): string {
+export function factSheetText(text: string, _format?: any): string {
   if (!text) return '';
   if (text.length <= MAX_SCAN) {
     return factSheetTextFromEntries(extractFactSheetEntries(text));

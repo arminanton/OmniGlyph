@@ -96,10 +96,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/diegosouzapw/OmniGlyph.git"
+    "url": "git+https://github.com/arminanton/OmniGlyph.git"
   },
-  "homepage": "https://github.com/diegosouzapw/OmniGlyph#readme",
+  "homepage": "https://github.com/arminanton/OmniGlyph#readme",
   "bugs": {
-    "url": "https://github.com/diegosouzapw/OmniGlyph/issues"
+    "url": "https://github.com/arminanton/OmniGlyph/issues"
   }
 }

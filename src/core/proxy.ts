@@ -16,6 +16,22 @@ import {
   buildCacheablePrefixCountTokensBody,
 } from './measurement.js';
 import type { Usage } from './types.js';
+import {
+  parseTrustAdjacentToolRounds,
+  resolveTrustAdjacentToolRoundsEnv,
+  withClientToolRoundShape,
+} from './client-tool-round.js';
+import {
+  markCacheDead,
+  noteCacheOutcome,
+  responseLeftNoCache,
+} from './session-state.js';
+
+export {
+  parseTrustAdjacentToolRounds,
+  resolveTrustAdjacentToolRoundsEnv,
+  withClientToolRoundShape,
+};
 
 export interface ProxyConfig {
   /** 'cloudflare-ai-gateway': routes both families through gatewayBaseUrl;
@@ -33,6 +49,11 @@ export interface ProxyConfig {
   openAIUpstream?: string;
   /** Override or supply an OpenAI API key. If unset, we forward Authorization. */
   openAIApiKey?: string;
+  authToken?: string;
+  cloudflareUpstream?: string;
+  cloudflareApiKey?: string;
+  openAIModels?: string[];
+  cloudflareModels?: string[];
   /** Pass a function to inject dynamic values per-request (e.g. live charsPerToken);
    *  static object for Workers/tests. */
   transform?: TransformOptions | (() => TransformOptions);
@@ -53,6 +74,9 @@ export interface ProxyConfig {
 export interface ProxyEvent {
   method: string;
   path: string;
+  provider?: string;
+  accountingProvider?: string;
+  streamTermination?: string;
   /** Top-level request model when present. Used for telemetry/dashboard labels only. */
   model?: string;
   status: number;
@@ -896,9 +920,14 @@ export function createProxy(config: ProxyConfig = {}) {
         // Unsupported/unverified model → a true passthrough: no break-even
         // compression (a text-only model may not accept injected image blocks
         // at all, and an unverified one hasn't proven it can read them back).
+        const clientSessionId = req.headers.get('x-claude-code-session-id') ?? undefined;
         let effectiveOpts = imageOk
           ? transformOpts
           : { ...transformOpts, compress: false };
+        if (clientSessionId) {
+          effectiveOpts = { ...effectiveOpts, claudeCodeSessionId: clientSessionId };
+        }
+        effectiveOpts = withClientToolRoundShape(effectiveOpts, req.headers);
         // Mid-session enable guard (Anthropic wire only — cache_control is a
         // Messages concept): a session we have never imaged, arriving with
         // caller markers, holds its prefix cached as TEXT. Feed the gate the
@@ -1037,9 +1066,15 @@ export function createProxy(config: ProxyConfig = {}) {
       errorBodyPromise.catch(() => undefined),
       measurementPromise.catch(() => undefined),
       stopReasonPromise.catch(() => undefined),
-    ]).then(([usage, errorBody, measurement, stopReason]) =>
-      fire(upstreamRes.status, info, undefined, firstByteMs, usage, errorBody, measurement, stopReason),
-    );
+    ]).then(([usage, errorBody, measurement, stopReason]) => {
+      if (usage) {
+        noteCacheOutcome(info?.sessionKey, usage.cache_read_input_tokens, usage.cache_creation_input_tokens);
+      }
+      if (upstreamRes.status >= 400 && responseLeftNoCache(upstreamRes.status, errorBody)) {
+        markCacheDead(info?.sessionKey);
+      }
+      return fire(upstreamRes.status, info, undefined, firstByteMs, usage, errorBody, measurement, stopReason);
+    });
 
     return new Response(teed.body, {
       status: upstreamRes.status,

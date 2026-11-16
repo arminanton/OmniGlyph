@@ -53,7 +53,7 @@ describe('findClosedPrefixBoundary', () => {
     expect(findClosedPrefixBoundary(msgs, 3)).toBe(2);
   });
 
-  it('returns the last-closed boundary, not the cutoff itself, when there are mid-flight tool_uses', () => {
+  it('keeps an adjacent closed pair with the following mid-flight tool_use', () => {
     const msgs: Message[] = [
       usr('do thing'),
       asst([{ type: 'tool_use', id: 'A', name: 't', input: {} }]),
@@ -62,10 +62,10 @@ describe('findClosedPrefixBoundary', () => {
       asst([{ type: 'tool_use', id: 'B', name: 't', input: {} }]),
       usr('plain text'), // no tool_result for B → B is open
     ];
-    // Cutoff exclusive=5 → scan all 5 messages. After msg 2, openSet={}.
-    // After msg 3, openSet={B}. After msg 4 (plain user, no tool_result),
-    // openSet still {B}. Last closed index = 2.
-    expect(findClosedPrefixBoundary(msgs, 5)).toBe(2);
+    // The closed A pair is immediately followed by B. That shape may be a
+    // serialized parallel round, so only the pre-round user message is safe.
+    expect(findClosedPrefixBoundary(msgs, 5)).toBe(0);
+    expect(findClosedPrefixBoundary(msgs, 5, true)).toBe(2);
   });
 
   it('handles parallel tool calls in one assistant turn', () => {

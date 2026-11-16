@@ -8,6 +8,7 @@
 import {
   ATLAS_CELL_W,
   ATLAS_CELL_H,
+  ATLAS_ASCENT,
   ATLAS_PIXELS,
   ATLAS_OFFSETS,
   ATLAS_WIDE_FLAGS,
@@ -16,12 +17,208 @@ import {
 import {
   ATLAS_GRAY_CELL_W,
   ATLAS_GRAY_CELL_H,
+  ATLAS_GRAY_ASCENT,
   ATLAS_GRAY_PIXELS,
   ATLAS_GRAY_OFFSETS,
   ATLAS_GRAY_WIDE_FLAGS,
   atlasGrayRank,
 } from './atlas-gray.js';
+import {
+  ATLAS_CELL_W as JBM10_CELL_W,
+  ATLAS_CELL_H as JBM10_CELL_H,
+  ATLAS_ASCENT as JBM10_ASCENT,
+  ATLAS_PIXELS as JBM10_PIXELS,
+  ATLAS_OFFSETS as JBM10_OFFSETS,
+  ATLAS_WIDE_FLAGS as JBM10_WIDE_FLAGS,
+  atlasRank as jbMono10Rank,
+} from './atlas-jbmono10.js';
+import {
+  ATLAS_GRAY_CELL_W as JBM10_GRAY_CELL_W,
+  ATLAS_GRAY_CELL_H as JBM10_GRAY_CELL_H,
+  ATLAS_GRAY_ASCENT as JBM10_GRAY_ASCENT,
+  ATLAS_GRAY_PIXELS as JBM10_GRAY_PIXELS,
+  ATLAS_GRAY_OFFSETS as JBM10_GRAY_OFFSETS,
+  ATLAS_GRAY_WIDE_FLAGS as JBM10_GRAY_WIDE_FLAGS,
+  atlasGrayRank as jbMono10GrayRank,
+} from './atlas-gray-jbmono10.js';
+import {
+  ATLAS_CELL_W as JBM12_CELL_W,
+  ATLAS_CELL_H as JBM12_CELL_H,
+  ATLAS_ASCENT as JBM12_ASCENT,
+  ATLAS_PIXELS as JBM12_PIXELS,
+  ATLAS_OFFSETS as JBM12_OFFSETS,
+  ATLAS_WIDE_FLAGS as JBM12_WIDE_FLAGS,
+  atlasRank as jbMono12Rank,
+} from './atlas-jbmono12.js';
+import {
+  ATLAS_GRAY_CELL_W as JBM12_GRAY_CELL_W,
+  ATLAS_GRAY_CELL_H as JBM12_GRAY_CELL_H,
+  ATLAS_GRAY_ASCENT as JBM12_GRAY_ASCENT,
+  ATLAS_GRAY_PIXELS as JBM12_GRAY_PIXELS,
+  ATLAS_GRAY_OFFSETS as JBM12_GRAY_OFFSETS,
+  ATLAS_GRAY_WIDE_FLAGS as JBM12_GRAY_WIDE_FLAGS,
+  atlasGrayRank as jbMono12GrayRank,
+} from './atlas-gray-jbmono12.js';
+import {
+  ATLAS_CELL_W as JBM14_CELL_W,
+  ATLAS_CELL_H as JBM14_CELL_H,
+  ATLAS_ASCENT as JBM14_ASCENT,
+  ATLAS_PIXELS as JBM14_PIXELS,
+  ATLAS_OFFSETS as JBM14_OFFSETS,
+  ATLAS_WIDE_FLAGS as JBM14_WIDE_FLAGS,
+  atlasRank as jbMono14Rank,
+} from './atlas-jbmono14.js';
+import {
+  ATLAS_GRAY_CELL_W as JBM14_GRAY_CELL_W,
+  ATLAS_GRAY_CELL_H as JBM14_GRAY_CELL_H,
+  ATLAS_GRAY_ASCENT as JBM14_GRAY_ASCENT,
+  ATLAS_GRAY_PIXELS as JBM14_GRAY_PIXELS,
+  ATLAS_GRAY_OFFSETS as JBM14_GRAY_OFFSETS,
+  ATLAS_GRAY_WIDE_FLAGS as JBM14_GRAY_WIDE_FLAGS,
+  atlasGrayRank as jbMono14GrayRank,
+} from './atlas-gray-jbmono14.js';
 import { encodeGrayPng, encodeRgbPng } from './png.js';
+
+export type RenderFont = 'spleen-5x8' | 'jetbrains-mono-10' | 'jetbrains-mono-12' | 'jetbrains-mono-14';
+export const DEFAULT_RENDER_FONT: RenderFont = 'spleen-5x8';
+
+interface BitAtlas {
+  cellW: number;
+  cellH: number;
+  ascent: number;
+  pixels: Uint8Array;
+  offsets: Uint32Array;
+  wideFlags: Uint8Array;
+  rank: (codepoint: number) => number;
+}
+
+interface GrayAtlas {
+  cellW: number;
+  cellH: number;
+  ascent: number;
+  pixels: Uint8Array;
+  offsets: Uint32Array;
+  wideFlags: Uint8Array;
+  rank: (codepoint: number) => number;
+}
+
+interface AtlasSet {
+  bit: BitAtlas;
+  gray: GrayAtlas;
+}
+
+const DEFAULT_ATLAS: AtlasSet = {
+  bit: {
+    cellW: ATLAS_CELL_W,
+    cellH: ATLAS_CELL_H,
+    ascent: ATLAS_ASCENT,
+    pixels: ATLAS_PIXELS,
+    offsets: ATLAS_OFFSETS,
+    wideFlags: ATLAS_WIDE_FLAGS,
+    rank: atlasRank,
+  },
+  gray: {
+    cellW: ATLAS_GRAY_CELL_W,
+    cellH: ATLAS_GRAY_CELL_H,
+    ascent: ATLAS_GRAY_ASCENT,
+    pixels: ATLAS_GRAY_PIXELS,
+    offsets: ATLAS_GRAY_OFFSETS,
+    wideFlags: ATLAS_GRAY_WIDE_FLAGS,
+    rank: atlasGrayRank,
+  },
+};
+
+const JBM10_ATLAS: AtlasSet = {
+  bit: {
+    cellW: JBM10_CELL_W,
+    cellH: JBM10_CELL_H,
+    ascent: JBM10_ASCENT,
+    pixels: JBM10_PIXELS,
+    offsets: JBM10_OFFSETS,
+    wideFlags: JBM10_WIDE_FLAGS,
+    rank: jbMono10Rank,
+  },
+  gray: {
+    cellW: JBM10_GRAY_CELL_W,
+    cellH: JBM10_GRAY_CELL_H,
+    ascent: JBM10_GRAY_ASCENT,
+    pixels: JBM10_GRAY_PIXELS,
+    offsets: JBM10_GRAY_OFFSETS,
+    wideFlags: JBM10_GRAY_WIDE_FLAGS,
+    rank: jbMono10GrayRank,
+  },
+};
+
+const JBM12_ATLAS: AtlasSet = {
+  bit: {
+    cellW: JBM12_CELL_W,
+    cellH: JBM12_CELL_H,
+    ascent: JBM12_ASCENT,
+    pixels: JBM12_PIXELS,
+    offsets: JBM12_OFFSETS,
+    wideFlags: JBM12_WIDE_FLAGS,
+    rank: jbMono12Rank,
+  },
+  gray: {
+    cellW: JBM12_GRAY_CELL_W,
+    cellH: JBM12_GRAY_CELL_H,
+    ascent: JBM12_GRAY_ASCENT,
+    pixels: JBM12_GRAY_PIXELS,
+    offsets: JBM12_GRAY_OFFSETS,
+    wideFlags: JBM12_GRAY_WIDE_FLAGS,
+    rank: jbMono12GrayRank,
+  },
+};
+
+const JBM14_ATLAS: AtlasSet = {
+  bit: {
+    cellW: JBM14_CELL_W,
+    cellH: JBM14_CELL_H,
+    ascent: JBM14_ASCENT,
+    pixels: JBM14_PIXELS,
+    offsets: JBM14_OFFSETS,
+    wideFlags: JBM14_WIDE_FLAGS,
+    rank: jbMono14Rank,
+  },
+  gray: {
+    cellW: JBM14_GRAY_CELL_W,
+    cellH: JBM14_GRAY_CELL_H,
+    ascent: JBM14_GRAY_ASCENT,
+    pixels: JBM14_GRAY_PIXELS,
+    offsets: JBM14_GRAY_OFFSETS,
+    wideFlags: JBM14_GRAY_WIDE_FLAGS,
+    rank: jbMono14GrayRank,
+  },
+};
+
+function atlasSet(font: RenderFont | undefined): AtlasSet {
+  if (font === 'jetbrains-mono-10') return JBM10_ATLAS;
+  if (font === 'jetbrains-mono-12') return JBM12_ATLAS;
+  if (font === 'jetbrains-mono-14') return JBM14_ATLAS;
+  return DEFAULT_ATLAS;
+}
+
+function bitGlyph(codepoint: number, font: RenderFont | undefined): { atlas: BitAtlas; rank: number } | null {
+  const selected = atlasSet(font).bit;
+  const rank = selected.rank(codepoint);
+  if (rank >= 0) return { atlas: selected, rank };
+  if (selected !== DEFAULT_ATLAS.bit) {
+    const fallbackRank = DEFAULT_ATLAS.bit.rank(codepoint);
+    if (fallbackRank >= 0) return { atlas: DEFAULT_ATLAS.bit, rank: fallbackRank };
+  }
+  return null;
+}
+
+function grayGlyph(codepoint: number, font: RenderFont | undefined): { atlas: GrayAtlas; rank: number } | null {
+  const selected = atlasSet(font).gray;
+  const rank = selected.rank(codepoint);
+  if (rank >= 0) return { atlas: selected, rank };
+  if (selected !== DEFAULT_ATLAS.gray) {
+    const fallbackRank = DEFAULT_ATLAS.gray.rank(codepoint);
+    if (fallbackRank >= 0) return { atlas: DEFAULT_ATLAS.gray, rank: fallbackRank };
+  }
+  return null;
+}
 
 /** Page-height ceiling. Measured (2026-07-01, count_tokens sweep, claude-sonnet-4-5 — see
  *  /tmp/pxexp/LEVER1-findings.md): the API downscales any image to fit BOTH long-edge ≤1568
@@ -37,6 +234,7 @@ export const READABLE_CHARS_PER_IMAGE = 28080;
  *  chars fills the 1568×728 page. NOTE: verbatim recall of imaged text is unreliable at any size. */
 export const DENSE_CONTENT_CHARS_PER_IMAGE = 28080;
 export const DENSE_CONTENT_COLS = 312;
+export const ANTHROPIC_SLAB_COLS = DENSE_CONTENT_COLS;
 /** Bare 5×8 cell (no padding). A/B showed 5×8 beats 7×10 on dense JSON (4/5 vs 3/5 reads, 42% fewer tokens).
  *  Revert to {cellWBonus:2, cellHBonus:2} if misread rates rise.
  *  1-BIT atlas (aa:false), measured 2026-07-05 on Fable 5 (density-frontier,
@@ -60,6 +258,15 @@ export const DEFAULT_CELL_H_BONUS = 0;
 /** Effective cell pixel dimensions. transform.ts derives image-budget math from these. */
 export const CELL_W = ATLAS_CELL_W + DEFAULT_CELL_W_BONUS;
 export const CELL_H = ATLAS_CELL_H + DEFAULT_CELL_H_BONUS;
+
+/** Visual rows per image: `floor((MAX_HEIGHT_PX − 2·PAD_Y) / CELL_H)`. Derived
+ *  from the cell geometry above so break-even math auto-tracks it. */
+export const LINES_PER_IMAGE = Math.max(1, Math.floor((MAX_HEIGHT_PX - 2 * PAD_Y) / CELL_H));
+
+/** Real char capacity of one page AT A GIVEN COLUMN WIDTH. */
+export function maxCharsPerImage(cols: number): number {
+  return Math.min(Math.max(1, cols) * LINES_PER_IMAGE, READABLE_CHARS_PER_IMAGE);
+}
 
 export interface RenderedImage {
   png: Uint8Array;
@@ -123,6 +330,18 @@ export interface RenderStyle {
    * Applied after invert; ink stays near-black via linear remap onto the paper.
    */
   paperGray?: number;
+  /** Primary raster font. Default spleen-5x8. */
+  font?: RenderFont;
+}
+
+export function renderCellWidth(style: RenderStyle = {}): number {
+  const atlas = style.aa === true ? atlasSet(style.font).gray : atlasSet(style.font).bit;
+  return Math.max(1, atlas.cellW + Math.floor(style.cellWBonus ?? DEFAULT_CELL_W_BONUS));
+}
+
+export function renderCellHeight(style: RenderStyle = {}): number {
+  const atlas = style.aa === true ? atlasSet(style.font).gray : atlasSet(style.font).bit;
+  return Math.max(1, atlas.cellH + Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
 }
 
 // --- column-aware wrapping -------------------------------------------------
@@ -347,32 +566,54 @@ export function dereflow(reflowed: string): string {
 export const GLYPH_ESCAPE_OPEN = '[U+';
 export const GLYPH_ESCAPE_CLOSE = ']';
 
-/** Codepoints that stay DROPPED (blank cell) rather than escaped. Escaping these
- *  would add noise, not information — they're modifiers/invisibles, not content.
- *  C0 additionally MUST keep width-1: the parallel slot string carries \x01/\x02
- *  role markers and \x03 neutral (see SLOT_MARK_*), and escaping them would
- *  desync slot/text alignment and smear role hues. */
-function isEscapeExempt(cp: number): boolean {
-  if (cp < 0x20) return true; // C0 controls (slot markers; \t is expanded before we run)
-  if (cp >= 0x7f && cp <= 0x9f) return true; // DEL + C1 controls
-  if (cp >= 0x0300 && cp <= 0x036f) return true; // combining diacritics
-  if (cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0x2060 || cp === 0xfeff)
-    return true; // zero-width / word-joiner / BOM
-  if (cp >= 0xfe00 && cp <= 0xfe0f) return true; // variation selectors (emoji presentation)
-  if (cp >= 0xe0100 && cp <= 0xe01ef) return true; // variation selectors supplement
-  return false;
+export function hasGlyph(
+  codepoint: number,
+  font: RenderFont = DEFAULT_RENDER_FONT,
+  aa?: boolean,
+): boolean {
+  if (aa) {
+    return grayGlyph(codepoint, font) !== null;
+  }
+  return bitGlyph(codepoint, font) !== null;
 }
 
-/** Replace atlas-missing codepoints with `[U+HEX]` (uppercase hex — e.g.
- *  🔥 → `[U+1F525]`). Lossless for non-exempt misses (hex → codepoint) and
- *  idempotent: the escape spells only atlas-present chars, so a second pass is
- *  a no-op. Fast path allocates nothing when every codepoint is in the atlas. */
-export function escapeMissingGlyphs(line: string): string {
+/**
+ * Codepoints exempt from atlas-miss escaping ([U+HEX]).
+ * C0 control characters (0x01–0x1F) — including internal renderer slot markers
+ * (SLOT_MARK_USER, SLOT_MARK_ASSISTANT, SLOT_NEUTRAL) — MUST stay unescaped to preserve
+ * 1:1 character positional alignment between text and parallel slot strings for role coloring.
+ * All source-content Unicode (variation selectors, ZWJ, combining marks, zero-width/BOM/
+ * word-joiner codepoints, C1 controls, and missing visible Unicode) is escaped
+ * deterministically to ASCII [U+HEX].
+ */
+function isEscapeExempt(cp: number): boolean {
+  return cp >= 0x0001 && cp < 0x0020;
+}
+
+/**
+ * Replace atlas-missing codepoints with `[U+HEX]` (uppercase hex — e.g.
+ * 🔥 → `[U+1F525]`, U+FE0F → `[U+FE0F]`).
+ *
+ * Respects the selected render font and AA companion atlas for glyph availability checks.
+ */
+export function escapeMissingGlyphs(
+  line: string,
+  font?: RenderFont | RenderStyle,
+  aa?: boolean,
+): string {
+  let renderFont: RenderFont = DEFAULT_RENDER_FONT;
+  let useAA: boolean | undefined = aa;
+  if (typeof font === 'object' && font !== null) {
+    useAA = font.aa;
+    renderFont = font.font ?? DEFAULT_RENDER_FONT;
+  } else if (typeof font === 'string') {
+    renderFont = font;
+  }
   let out: string | null = null; // lazily materialized on first miss
   let i = 0;
   for (const ch of line) {
     const cp = ch.codePointAt(0)!;
-    if (atlasRank(cp) < 0 && !isEscapeExempt(cp)) {
+    if (!hasGlyph(cp, renderFont, useAA) && !isEscapeExempt(cp)) {
       if (out === null) out = line.slice(0, i);
       out += GLYPH_ESCAPE_OPEN + cp.toString(16).toUpperCase() + GLYPH_ESCAPE_CLOSE;
     } else if (out !== null) {
@@ -412,7 +653,7 @@ export function measureLineCols(line: string, markerScale: number = 1): number {
 }
 
 /** Always renders at full canvas width. Signature kept for transform.ts compatibility; returns cols unchanged. */
-export function shrinkColsToContent(text: string, cols: number, markerScale: number = 1): number {
+export function shrinkColsToContent(text: string, cols: number, markerScale: number = 1, _font?: any): number {
   // Real content-width measurement — delegates to measureContentCols (was historically a
   // no-op stub). The proxy's cost gate AND renderer both call this, so sizing the canvas to
   // the widest line here makes the proxy match the SDK/export path (renderTextToImages),
@@ -429,13 +670,19 @@ export function shrinkColsToContent(text: string, cols: number, markerScale: num
  * deterministic width → cache-prefix-safe. Tabs are expanded so the measured width
  * matches what the renderer actually lays out.
  */
-export function measureContentCols(text: string, maxCols: number, markerScale: number = 1): number {
+export function measureContentCols(
+  text: string,
+  maxCols: number,
+  markerScale: number = 1,
+  font: RenderFont = DEFAULT_RENDER_FONT,
+  aa?: boolean,
+): number {
   const cap = Math.max(1, maxCols | 0);
   let widest = 1;
   let start = 0;
   for (let i = 0; i <= text.length; i++) {
     if (i === text.length || text[i] === '\n') {
-      const w = measureLineCols(escapeMissingGlyphs(expandTabsInLine(text.slice(start, i))), markerScale);
+      const w = measureLineCols(escapeMissingGlyphs(expandTabsInLine(text.slice(start, i)), font, aa), markerScale);
       if (w > widest) widest = w;
       if (widest >= cap) return cap;
       start = i + 1;
@@ -444,11 +691,17 @@ export function measureContentCols(text: string, maxCols: number, markerScale: n
   return Math.min(cap, widest);
 }
 
-export function wrapLines(text: string, cols: number, markerScale: number = 1): string[] {
+export function wrapLines(
+  text: string,
+  cols: number,
+  markerScale: number = 1,
+  font: RenderFont = DEFAULT_RENDER_FONT,
+  aa?: boolean,
+): string[] {
   const out: string[] = [];
   const minified = minifyForRender(text);
   for (const rawWithTabs of minified.split('\n')) {
-    const raw = escapeMissingGlyphs(expandTabsInLine(rawWithTabs));
+    const raw = escapeMissingGlyphs(expandTabsInLine(rawWithTabs), font, aa);
     if (raw.length === 0) {
       out.push('');
       continue;
@@ -691,15 +944,15 @@ export async function renderChunkToPng(
   const atlasH = useAA ? ATLAS_GRAY_CELL_H : ATLAS_CELL_H;
   const atlasW = useAA ? ATLAS_GRAY_CELL_W : ATLAS_CELL_W;
   const markerScale = Math.max(1, Math.floor(style.markerScale ?? 1));
-  const cellH = atlasH + Math.max(0, Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
-  const cellW = Math.max(1, atlasW + Math.floor(style.cellWBonus ?? DEFAULT_CELL_W_BONUS));
-  const lines = wrapLines(text, cols, markerScale);
+  const cellH = renderCellHeight(style);
+  const cellW = renderCellWidth(style);
+  const lines = wrapLines(text, cols, markerScale, style.font, style.aa);
   // Slot string carries role attribution by position. It is width-identical to
   // `text`, so wrapLines splits it into the exact same rows — fitSlotLines[r] aligns
   // codepoint-for-codepoint with fitLines[r]. Only built when coloring is on.
   const slotLines: string[] | null =
     style.colorByRole === true && slotText !== undefined
-      ? wrapLines(slotText, cols, markerScale)
+      ? wrapLines(slotText, cols, markerScale, style.font, style.aa)
       : null;
 
   const maxLines = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
@@ -912,13 +1165,13 @@ export async function renderTextToPngsWithCharLimit(
   slotText?: string,
 ): Promise<RenderedImage[]> {
   const markerScale = Math.max(1, Math.floor(style.markerScale ?? 1));
-  const cellH = ATLAS_CELL_H + Math.max(0, Math.floor(style.cellHBonus ?? DEFAULT_CELL_H_BONUS));
-  const lines = wrapLines(text, cols, markerScale);
+  const cellH = renderCellHeight(style);
+  const lines = wrapLines(text, cols, markerScale, style.font, style.aa);
   // Width-identical slot rows align 1:1 with `lines`; pages are contiguous slices,
   // so the same index range gives each page its slot half. Only built when coloring.
   const slotLines: string[] | null =
     style.colorByRole === true && slotText !== undefined
-      ? wrapLines(slotText, cols, markerScale)
+      ? wrapLines(slotText, cols, markerScale, style.font, style.aa)
       : null;
   const hardLinesPerImg = Math.max(1, Math.floor((maxHeightPx - 2 * PAD_Y) / cellH));
   // Dense pages (DENSE_CONTENT_CHARS_PER_IMAGE) fill the full 1932 px height;
@@ -1147,13 +1400,13 @@ export async function renderDensePages(
 ): Promise<RenderedImage[]> {
   const source = opts.reflow ? reflow(text) ?? text : text;
   const maxCols = Math.max(1, (opts.cols ?? DENSE_CONTENT_COLS) | 0);
-  const cols = opts.shrink === false ? maxCols : measureContentCols(source, maxCols);
+  const style = opts.style ?? DENSE_RENDER_STYLE;
+  const cols = opts.shrink === false ? maxCols : measureContentCols(source, maxCols, 1, style.font, style.aa);
   const requestedCols =
     opts.multiCol === undefined || opts.multiCol === 'auto'
       ? Math.max(1, maxFittingCols(cols))
       : Math.max(1, opts.multiCol | 0);
   const numCols = cols < maxCols ? 1 : requestedCols;
-  const style = opts.style ?? DENSE_RENDER_STYLE;
   const maxChars = opts.maxCharsPerImage ?? DENSE_CONTENT_CHARS_PER_IMAGE;
   const maxHeightPx = opts.maxHeightPx ?? MAX_HEIGHT_PX;
   return numCols > 1

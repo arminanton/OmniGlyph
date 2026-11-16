@@ -108,6 +108,8 @@ export interface TrackEvent {
   system_sha8?: string;
   claude_md_sha8?: string;
   first_user_sha8?: string;
+  session_key?: string;
+  session_key_source?: 'client' | 'cwd' | 'anchor';
 
   // From Anthropic/OpenAI Usage:
   input_tokens?: number;
@@ -153,6 +155,10 @@ export interface TrackEvent {
   error?: string;
   /** First ~2 KiB of the upstream 4xx response body. */
   error_body?: string;
+  provider?: string;
+  accounting_provider?: string;
+  native_injected_tokens?: number;
+  stream_termination?: string;
   /** sha256[0..8] of the TRANSFORMED outgoing body — correlates payloads without persisting them. */
   req_body_sha8?: string;
   /** Gzipped+base64 TRANSFORMED body for 4xx, inlined when ≤ TRACK_BODY_INLINE_MAX. Node host writes sidecar for larger bodies. */
@@ -188,6 +194,9 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
   if (ev.error) out.error = ev.error;
   if (ev.errorBody) out.error_body = ev.errorBody;
   if (ev.reqBodySha8) out.req_body_sha8 = ev.reqBodySha8;
+  if (ev.provider) out.provider = ev.provider;
+  if (ev.accountingProvider) out.accounting_provider = ev.accountingProvider;
+  if (ev.streamTermination) out.stream_termination = ev.streamTermination;
   // Body sample: sidecar path (Node) > inline base64 if it fits > drop (Workers, oversized).
   if (ev.reqBodySamplePath) {
     out.req_body_sample_path = ev.reqBodySamplePath;
@@ -283,6 +292,8 @@ export function toTrackEvent(ev: ProxyEvent): TrackEvent {
     if (info.systemSha8) out.system_sha8 = info.systemSha8;
     if (info.claudeMdSha8) out.claude_md_sha8 = info.claudeMdSha8;
     if (info.firstUserSha8) out.first_user_sha8 = info.firstUserSha8;
+    if (info.sessionKey) out.session_key = info.sessionKey;
+    if (info.sessionKeySource) out.session_key_source = info.sessionKeySource;
     if (info.baselineTokens !== undefined && info.baselineTokens > 0) {
       out.baseline_tokens = info.baselineTokens;
     }

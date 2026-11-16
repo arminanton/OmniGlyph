@@ -15,37 +15,31 @@
  * cache (`cached_tokens`, a subset of input_tokens). For the gpt-5 family, cached
  * input is billed at ~0.1× the normal input rate; there is no 1.25× write
  * premium like Anthropic's ephemeral cache.
+ *
+ * The /v1/responses path is shared by several vendors (GPT, Claude, Grok,
+ * Gemini), so the price ratios below are read from the serving model's profile
+ * rather than re-derived from its id here — the same profile the gate prices
+ * images with, so reporting and gating can never disagree about the model.
  */
 
-/** gpt-5 cached input list ratio: $0.125 / $1.25 per 1M tokens. */
-export const OPENAI_GPT5_CACHE_READ_RATE = 0.1;
-
-/** gpt-5 output/input list ratio: $10 / $1.25 per 1M tokens. */
-export const OPENAI_GPT5_OUTPUT_RATE = 8;
+import { resolveGptProfile } from './gpt-model-profiles.js';
 
 /** Grok cached prompt list ratio from xAI model pricing metadata. */
 export const GROK_CACHE_READ_RATE = 0.25;
 /** Grok completion/input list ratio from xAI model pricing metadata. */
 export const GROK_OUTPUT_RATE = 3;
 
-/** Older OpenAI families use a less aggressive cached-input discount. OmniGlyph's
- * GPT compression gate is currently gpt-5.x-only, but keep the helper explicit
- * so passthrough telemetry does not accidentally get priced at Anthropic rates. */
+/** Cached-input ÷ uncached-input list-price ratio for the model serving this
+ *  request. The ratio is a PROFILE field (`cacheReadRate`), so a new family is
+ *  a profile entry or a OMNIGLYPH_GPT_PROFILES override — not a regex added here,
+ *  which is how the gate and the savings math previously drifted apart. */
 export function openAICacheReadRate(model: string | undefined): number {
-  const m = (model ?? '').toLowerCase();
-  if (/^gpt-5/.test(m)) return OPENAI_GPT5_CACHE_READ_RATE;
-  if (m.startsWith('grok-')) return GROK_CACHE_READ_RATE;
-  return 0.5;
+  return resolveGptProfile(model).cacheReadRate;
 }
 
+/** Output ÷ uncached-input list-price ratio, from the same profile. */
 export function openAIOutputRate(model: string | undefined): number {
-  const m = (model ?? '').toLowerCase();
-  if (/^gpt-5/.test(m)) return OPENAI_GPT5_OUTPUT_RATE;
-  if (m.startsWith('grok-')) return GROK_OUTPUT_RATE;
-  // Good-enough fallback for non-compressed OpenAI rows; they normally do not
-  // enter the savings numerator, but the all-usage denominator should still be
-  // roughly dollar-weighted.
-  return 4;
+  return resolveGptProfile(model).outputRate;
 }
 
 /** Weighted input tokens actually paid to OpenAI this turn. `cachedTokens` is a
@@ -67,10 +61,11 @@ export function computeOpenAIBaselineRawTokens(
   inputTokens: number,
   imageTokens: number,
   baselineImagedTokens: number,
+  nativeInjectedTokens: number = 0,
 ): number {
   if (inputTokens <= 0) return 0;
   const delta = (baselineImagedTokens || 0) - (imageTokens || 0);
-  return Math.max(0, inputTokens + delta);
+  return Math.max(0, inputTokens + delta - Math.max(0, nativeInjectedTokens || 0));
 }
 
 /** Weighted input tokens for the unproxied GPT text counterfactual.
@@ -88,10 +83,13 @@ export function computeOpenAIBaselineInputEff(
   imageTokens: number,
   baselineImagedTokens: number,
   model?: string,
+  nativeInjectedTokens: number = 0,
 ): number {
   const actual = computeOpenAIActualInputEff(inputTokens, cachedTokens, model);
   if (inputTokens <= 0 || imageTokens <= 0 || baselineImagedTokens <= 0) return actual;
   const delta = baselineImagedTokens - imageTokens;
   const deltaWeight = (cachedTokens || 0) > 0 ? openAICacheReadRate(model) : 1.0;
-  return actual + delta * deltaWeight;
+  // Synthetic native text occupies the same stable prefix as the images, so
+  // apply the same observed cache weight as the replacement delta.
+  return actual + (delta - Math.max(0, nativeInjectedTokens || 0)) * deltaWeight;
 }
