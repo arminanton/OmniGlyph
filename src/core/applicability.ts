@@ -43,7 +43,8 @@ export function stripVariantTags(model: string): string {
 }
 
 function baseModelId(model: string): string {
-  return stripVariantTags(model);
+  const stripped = stripVariantTags(model);
+  return stripped.includes('/') ? stripped.split('/').pop()! : stripped;
 }
 
 /** Dashboard runtime override; null = fall back to OMNIGLYPH_MODELS env / built-in default. In-memory only. */
