@@ -188,7 +188,7 @@ export function isOmniGlyphSupportedModelForScope(
   if (typeof model !== 'string') return false;
   if (scope === 'passthrough') return false;
   const base = baseModelId(model).toLowerCase();
-  if (scope === 'aggressive' || scope === 'smart-aggressive') {
+  if (scope === 'smart-aggressive') {
     if (!isModelFamilySupported(base)) return false;
     if (runtimeModelBases !== null) {
       return runtimeModelBases.some((candidate) => modelBaseMatches(base, candidate));
@@ -206,12 +206,12 @@ export function isOmniGlyphSupportedModelForScope(
 
 /** True when OmniGlyph may transform this Anthropic model. */
 export function isOmniGlyphSupportedModel(model: string | null | undefined): boolean {
-  return isAllowedForScope(model, activeSafetyScope());
+  return isOmniGlyphSupportedModelForScope(model, activeSafetyScope());
 }
 
 /** True when OmniGlyph may transform this GPT model. Shares the single OMNIGLYPH_MODELS scope. */
 export function isOmniGlyphSupportedGptModel(model: string | null | undefined): boolean {
-  return isAllowedForScope(model, activeSafetyScope());
+  return isOmniGlyphSupportedModelForScope(model, activeSafetyScope());
 }
 
 /** Canonical set of Anthropic Messages routes OmniGlyph transforms. Shared with

@@ -5,6 +5,8 @@
 
 import { transformRequest, type TransformOptions, type TransformInfo } from './transform.js';
 import { isClaudeModel, transformOpenAIChatCompletions, transformOpenAIResponses } from './openai.js';
+import { isGoogleInferencePath, parseGoogleModelFromPath, transformGoogleGenerateContent } from './google.js';
+import { isAntigravityInferencePath, transformAntigravityGenerateContent } from './antigravity.js';
 import {
   isAnthropicMessagesPath,
   isModelImageable,
@@ -554,7 +556,20 @@ function isOpenAIChatPath(pathname: string): boolean {
 function isOpenAIResponsesPath(pathname: string): boolean {
   return pathname === '/v1/responses'
     || pathname === '/openai/v1/responses'
-    || pathname === '/openai/responses';
+    || pathname === '/openai/responses'
+    || pathname.endsWith('/responses');
+}
+
+function isCodexPath(pathname: string): boolean {
+  return pathname.includes('/backend-api/codex') || pathname.startsWith('/providers/codex');
+}
+
+function extractAntigravityModel(bodyBytes: Uint8Array): string | undefined {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bodyBytes));
+    if (parsed && typeof parsed.model === 'string') return parsed.model;
+  } catch {}
+  return undefined;
 }
 
 function isCanonicalOpenAIPath(pathname: string, headers: Headers, hasOpenAIKey: boolean): boolean {
@@ -874,12 +889,29 @@ export function createProxy(config: ProxyConfig = {}) {
     const isMessages = req.method === 'POST' && isAnthropicMessagesPath(url.pathname);
     const isOpenAIChat = req.method === 'POST' && isOpenAIChatPath(url.pathname);
     const isOpenAIResponses = req.method === 'POST' && isOpenAIResponsesPath(url.pathname);
+    const isAntigravity = req.method === 'POST' && isAntigravityInferencePath(url.pathname);
+    const isGoogle = req.method === 'POST' && isGoogleInferencePath(url.pathname);
+    const isCodex = isCodexPath(url.pathname);
     const isOpenAIPath = isCanonicalOpenAIPath(
       url.pathname,
       req.headers,
       config.openAIApiKey !== undefined,
     );
-    const upstreamBase = providerPrefixed ? passthroughUpstream : isOpenAIPath ? openAIUpstream : upstream;
+    const codexUpstream = 'https://chatgpt.com';
+    const googleUpstream = 'https://generativelanguage.googleapis.com';
+    const antigravityUpstream = 'https://daily-cloudcode-pa.googleapis.com';
+
+    const upstreamBase = providerPrefixed
+      ? passthroughUpstream
+      : isCodex
+        ? codexUpstream
+        : isAntigravity
+          ? antigravityUpstream
+          : isGoogle
+            ? googleUpstream
+            : isOpenAIPath
+              ? openAIUpstream
+              : upstream;
 
     let bodyOut: BodyInit | null;
     let info: TransformInfo | undefined;
@@ -895,14 +927,18 @@ export function createProxy(config: ProxyConfig = {}) {
     /** Original pre-transform body — fuel for the retry-on-refusal. */
     let originalBody: Uint8Array | undefined;
 
-    if (isMessages || isOpenAIChat || isOpenAIResponses) {
+    if (isMessages || isOpenAIChat || isOpenAIResponses || isAntigravity || isGoogle) {
       const bodyIn = new Uint8Array(await req.arrayBuffer());
       originalBody = bodyIn;
       try {
         const transformOpts =
           typeof config.transform === 'function' ? config.transform() : config.transform;
         // Fail-closed: unreadable model → no compression, not a risky guess.
-        const model = readModelField(bodyIn);
+        const model = isAntigravity
+          ? extractAntigravityModel(bodyIn)
+          : isGoogle
+            ? (parseGoogleModelFromPath(url.pathname) ?? readModelField(bodyIn))
+            : readModelField(bodyIn);
         requestModel = model ?? undefined;
         // /v1/messages is only a wire schema: Claude Code can target a non-
         // Anthropic model (for example a GPT base). Do not apply Claude's
@@ -910,9 +946,12 @@ export function createProxy(config: ProxyConfig = {}) {
         // Messages-shaped. Non-Anthropic Messages requests fail closed to
         // passthrough until a model-aware Messages→GPT transform exists.
         const messagesAnthropic = isMessages && isClaudeModel(model);
+        const isGoogleOrAntigravity = isAntigravity || isGoogle;
         const modelOk = isMessages
           ? messagesAnthropic && isOmniGlyphSupportedModel(model)
-          : isOmniGlyphSupportedGptModel(model);
+          : isGoogleOrAntigravity
+            ? isOmniGlyphSupportedModel(model)
+            : isOmniGlyphSupportedGptModel(model);
         // Supported but unverified (e.g. Grok without an operator ack): stays
         // text-only, fail-closed, until OMNIGLYPH_UNVERIFIED_MODELS explicitly
         // acks the risk (or OmniGlyph's own reading receipt clears the base).
@@ -942,11 +981,15 @@ export function createProxy(config: ProxyConfig = {}) {
           const warm = estimateWarmPrefixTokens(bodyIn);
           if (warm > 0) effectiveOpts = { ...effectiveOpts, priorWarmTokens: warm };
         }
-        const r = isMessages
-          ? await transformRequest(bodyIn, effectiveOpts)
-          : isOpenAIChat
-            ? await transformOpenAIChatCompletions(bodyIn, effectiveOpts)
-            : await transformOpenAIResponses(bodyIn, effectiveOpts);
+        const r = isAntigravity
+          ? await transformAntigravityGenerateContent(bodyIn, effectiveOpts)
+          : isGoogle
+            ? await transformGoogleGenerateContent(bodyIn, model!, effectiveOpts)
+            : isMessages
+              ? await transformRequest(bodyIn, effectiveOpts)
+              : isOpenAIChat
+                ? await transformOpenAIChatCompletions(bodyIn, effectiveOpts)
+                : await transformOpenAIResponses(bodyIn, effectiveOpts);
         if (r.info.compressed) markImaged(sessionKey);
         if (!modelOk) r.info.reason = 'unsupported_model';
         else if (!imageOk) r.info.reason = 'model_unverified';
@@ -997,7 +1040,7 @@ export function createProxy(config: ProxyConfig = {}) {
     const outHeaders = filterHeaders(req.headers, STRIP_REQ_HEADERS);
     if (isOpenAIPath) {
       if (config.openAIApiKey) outHeaders.set('authorization', `Bearer ${config.openAIApiKey}`);
-    } else if (config.apiKey && (!providerPrefixed || url.pathname.startsWith('/anthropic/'))) {
+    } else if (config.apiKey && (!providerPrefixed || url.pathname.startsWith('/anthropic/')) && !isGoogle && !isAntigravity && !isCodex) {
       outHeaders.set('x-api-key', config.apiKey);
     }
 
@@ -1006,7 +1049,8 @@ export function createProxy(config: ProxyConfig = {}) {
     // Gateway OpenAI routes drop the `/v1` prefix; provider-prefixed passthrough
     // routes keep their full path so ocproxy-style upstreams see `/openai/*`,
     // `/google-ai-studio/*`, etc. exactly as the client sent them.
-    const outPath = isOpenAIPath && routes.stripOpenAIV1 ? path.replace(/^\/v1(?=\/)/, '') : path;
+    const outPathRaw = isOpenAIPath && routes.stripOpenAIV1 ? path.replace(/^\/v1(?=\/)/, '') : path;
+    const outPath = outPathRaw.replace(/^\/providers\/codex(?=\/)/, '');
     const upstreamUrl = upstreamBase + outPath;
     let upstreamRes: Response;
     try {
